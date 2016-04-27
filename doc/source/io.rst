@@ -91,11 +91,19 @@ filepath_or_buffer : various
   :class:`~python:io.StringIO`).
 sep : str, defaults to ``','`` for :func:`read_csv`, ``\t`` for :func:`read_table`
   Delimiter to use. If sep is ``None``,
-  will try to automatically determine this. Regular expressions are accepted,
-  use of a regular expression will force use of the python parsing engine and
-  will ignore quotes in the data.
+  will try to automatically determine this. Separators longer than 1 character
+  and different from ``'\s+'`` will be interpreted as regular expressions, will
+  force use of the python parsing engine and will ignore quotes in the data.
+  Regex example: ``'\\r\\t'``.
 delimiter : str, default ``None``
   Alternative argument name for sep.
+delim_whitespace : boolean, default False
+  Specifies whether or not whitespace (e.g. ``' '`` or ``'\t'``)
+  will be used as the delimiter. Equivalent to setting ``sep='\+s'``.
+  If this option is set to True, nothing should be passed in for the
+  ``delimiter`` parameter.
+
+  .. versionadded:: 0.18.1 support for the Python parser.
 
 Column and Index Locations and Names
 ++++++++++++++++++++++++++++++++++++
@@ -119,8 +127,12 @@ index_col :  int or sequence or ``False``, default ``None``
   each line, you might consider ``index_col=False`` to force pandas to *not* use
   the first column as the index (row names).
 usecols : array-like, default ``None``
-  Return a subset of the columns. Results in much faster parsing time and lower
-  memory usage
+  Return a subset of the columns. All elements in this array must either
+  be positional (i.e. integer indices into the document columns) or strings
+  that correspond to column names provided either by the user in `names` or
+  inferred from the document header row(s). For example, a valid `usecols`
+  parameter would be [0, 1, 2] or ['foo', 'bar', 'baz']. Using this parameter
+  results in much faster parsing time and lower memory usage.
 squeeze : boolean, default ``False``
   If the parsed data only contains one column then return a Series.
 prefix : str, default ``None``
@@ -217,10 +229,15 @@ chunksize : int, default ``None``
 Quoting, Compression, and File Format
 +++++++++++++++++++++++++++++++++++++
 
-compression : {``'infer'``, ``'gzip'``, ``'bz2'``, ``None``}, default ``'infer'``
-  For on-the-fly decompression of on-disk data. If 'infer', then use gzip or bz2
-  if filepath_or_buffer is a string ending in '.gz' or '.bz2', respectively, and
-  no decompression otherwise. Set to ``None`` for no decompression.
+compression : {``'infer'``, ``'gzip'``, ``'bz2'``, ``'zip'``, ``'xz'``, ``None``}, default ``'infer'``
+  For on-the-fly decompression of on-disk data. If 'infer', then use gzip,
+  bz2, zip, or xz if filepath_or_buffer is a string ending in '.gz', '.bz2',
+  '.zip', or '.xz', respectively, and no decompression otherwise. If using 'zip',
+  the ZIP file must contain only one data file to be read in.
+  Set to ``None`` for no decompression.
+
+  .. versionadded:: 0.18.1 support for 'zip' and 'xz' compression.
+
 thousands : str, default ``None``
   Thousands separator.
 decimal : str, default ``'.'``
@@ -2893,6 +2910,28 @@ everything in the sub-store and BELOW, so be *careful*.
    store.remove('food')
    store
 
+.. warning::
+
+    Hierarchical keys cannot be retrieved as dotted (attribute) access as described above for items stored under the root node.
+
+    .. code-block:: python
+
+       In [8]: store.foo.bar.bah
+       AttributeError: 'HDFStore' object has no attribute 'foo'
+
+       # you can directly access the actual PyTables node but using the root node
+       In [9]: store.root.foo.bar.bah
+       Out[9]:
+       /foo/bar/bah (Group) ''
+         children := ['block0_items' (Array), 'block0_values' (Array), 'axis0' (Array), 'axis1' (Array)]
+
+    Instead, use explicit string based keys
+
+    .. ipython:: python
+
+       store['foo/bar/bah']
+
+
 .. _io.hdf5-types:
 
 Storing Types
@@ -2902,8 +2941,8 @@ Storing Mixed Types in a Table
 ++++++++++++++++++++++++++++++
 
 Storing mixed-dtype data is supported. Strings are stored as a
-fixed-width using the maximum size of the appended column. Subsequent
-appends will truncate strings at this length.
+fixed-width using the maximum size of the appended column. Subsequent attempts
+at appending longer strings will raise a ``ValueError``.
 
 Passing ``min_itemsize={`values`: size}`` as a parameter to append
 will set a larger minimum for the string columns. Storing ``floats,
@@ -4365,7 +4404,7 @@ Creating BigQuery Tables
 As of 0.15.2, the gbq module has a function :func:`~pandas.io.gbq.generate_bq_schema` which will
 produce the dictionary representation schema of the specified pandas DataFrame.
 
-.. code-block:: python
+.. code-block:: ipython
 
    In [10]: gbq.generate_bq_schema(df, default_type='STRING')
 
@@ -4623,7 +4662,7 @@ Performance Considerations
 
 This is an informal comparison of various IO methods, using pandas 0.13.1.
 
-.. code-block:: python
+.. code-block:: ipython
 
    In [1]: df = DataFrame(randn(1000000,2),columns=list('AB'))
 
@@ -4638,7 +4677,7 @@ This is an informal comparison of various IO methods, using pandas 0.13.1.
 
 Writing
 
-.. code-block:: python
+.. code-block:: ipython
 
    In [14]: %timeit test_sql_write(df)
    1 loops, best of 3: 6.24 s per loop
@@ -4660,7 +4699,7 @@ Writing
 
 Reading
 
-.. code-block:: python
+.. code-block:: ipython
 
    In [18]: %timeit test_sql_read()
    1 loops, best of 3: 766 ms per loop
@@ -4682,7 +4721,7 @@ Reading
 
 Space on disk (in bytes)
 
-.. code-block:: python
+.. code-block::
 
     25843712 Apr  8 14:11 test.sql
     24007368 Apr  8 14:11 test_fixed.hdf

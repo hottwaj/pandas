@@ -43,6 +43,7 @@ dist
 # Egg metadata
 *.egg-info
 .eggs
+.pypirc
 
 # tox testing tool
 .tox
@@ -82,7 +83,10 @@ scikits
 
 # Performance Testing #
 #######################
-asv_bench/
+asv_bench/env/
+asv_bench/html/
+asv_bench/results/
+asv_bench/pandas/
 
 # Documentation generated files #
 #################################

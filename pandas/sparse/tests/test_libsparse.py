@@ -8,7 +8,7 @@ import pandas.util.testing as tm
 
 from pandas import compat
 
-from pandas._sparse import IntIndex, BlockIndex
+from pandas.sparse.array import IntIndex, BlockIndex, _make_index
 import pandas._sparse as splib
 
 TEST_LENGTH = 20
@@ -156,26 +156,99 @@ def test_index_make_union():
     # TODO: different-length index objects
 
 
-def test_lookup():
-    def _check(index):
-        assert (index.lookup(0) == -1)
-        assert (index.lookup(5) == 0)
-        assert (index.lookup(7) == 2)
-        assert (index.lookup(8) == -1)
-        assert (index.lookup(9) == -1)
-        assert (index.lookup(10) == -1)
-        assert (index.lookup(11) == -1)
-        assert (index.lookup(12) == 3)
-        assert (index.lookup(17) == 8)
-        assert (index.lookup(18) == -1)
+class TestSparseIndexCommon(tm.TestCase):
 
-    bindex = BlockIndex(20, [5, 12], [3, 6])
-    iindex = bindex.to_int_index()
+    _multiprocess_can_split_ = True
 
-    _check(bindex)
-    _check(iindex)
+    def test_lookup(self):
+        for kind in ['integer', 'block']:
+            idx = _make_index(4, np.array([2, 3], dtype=np.int32), kind=kind)
+            self.assertEqual(idx.lookup(-1), -1)
+            self.assertEqual(idx.lookup(0), -1)
+            self.assertEqual(idx.lookup(1), -1)
+            self.assertEqual(idx.lookup(2), 0)
+            self.assertEqual(idx.lookup(3), 1)
+            self.assertEqual(idx.lookup(4), -1)
 
-    # corner cases
+            idx = _make_index(4, np.array([], dtype=np.int32), kind=kind)
+
+            for i in range(-1, 5):
+                self.assertEqual(idx.lookup(i), -1)
+
+            idx = _make_index(4, np.array([0, 1, 2, 3], dtype=np.int32),
+                              kind=kind)
+            self.assertEqual(idx.lookup(-1), -1)
+            self.assertEqual(idx.lookup(0), 0)
+            self.assertEqual(idx.lookup(1), 1)
+            self.assertEqual(idx.lookup(2), 2)
+            self.assertEqual(idx.lookup(3), 3)
+            self.assertEqual(idx.lookup(4), -1)
+
+            idx = _make_index(4, np.array([0, 2, 3], dtype=np.int32),
+                              kind=kind)
+            self.assertEqual(idx.lookup(-1), -1)
+            self.assertEqual(idx.lookup(0), 0)
+            self.assertEqual(idx.lookup(1), -1)
+            self.assertEqual(idx.lookup(2), 1)
+            self.assertEqual(idx.lookup(3), 2)
+            self.assertEqual(idx.lookup(4), -1)
+
+    def test_lookup_array(self):
+        for kind in ['integer', 'block']:
+            idx = _make_index(4, np.array([2, 3], dtype=np.int32), kind=kind)
+
+            res = idx.lookup_array(np.array([-1, 0, 2], dtype=np.int32))
+            exp = np.array([-1, -1, 0], dtype=np.int32)
+            self.assert_numpy_array_equal(res, exp)
+
+            res = idx.lookup_array(np.array([4, 2, 1, 3], dtype=np.int32))
+            exp = np.array([-1, 0, -1, 1], dtype=np.int32)
+            self.assert_numpy_array_equal(res, exp)
+
+            idx = _make_index(4, np.array([], dtype=np.int32), kind=kind)
+            res = idx.lookup_array(np.array([-1, 0, 2, 4], dtype=np.int32))
+            exp = np.array([-1, -1, -1, -1], dtype=np.int32)
+
+            idx = _make_index(4, np.array([0, 1, 2, 3], dtype=np.int32),
+                              kind=kind)
+            res = idx.lookup_array(np.array([-1, 0, 2], dtype=np.int32))
+            exp = np.array([-1, 0, 2], dtype=np.int32)
+            self.assert_numpy_array_equal(res, exp)
+
+            res = idx.lookup_array(np.array([4, 2, 1, 3], dtype=np.int32))
+            exp = np.array([-1, 2, 1, 3], dtype=np.int32)
+            self.assert_numpy_array_equal(res, exp)
+
+            idx = _make_index(4, np.array([0, 2, 3], dtype=np.int32),
+                              kind=kind)
+            res = idx.lookup_array(np.array([2, 1, 3, 0], dtype=np.int32))
+            exp = np.array([1, -1, 2, 0], dtype=np.int32)
+            self.assert_numpy_array_equal(res, exp)
+
+            res = idx.lookup_array(np.array([1, 4, 2, 5], dtype=np.int32))
+            exp = np.array([-1, -1, 1, -1], dtype=np.int32)
+            self.assert_numpy_array_equal(res, exp)
+
+    def test_lookup_basics(self):
+        def _check(index):
+            assert (index.lookup(0) == -1)
+            assert (index.lookup(5) == 0)
+            assert (index.lookup(7) == 2)
+            assert (index.lookup(8) == -1)
+            assert (index.lookup(9) == -1)
+            assert (index.lookup(10) == -1)
+            assert (index.lookup(11) == -1)
+            assert (index.lookup(12) == 3)
+            assert (index.lookup(17) == 8)
+            assert (index.lookup(18) == -1)
+
+        bindex = BlockIndex(20, [5, 12], [3, 6])
+        iindex = bindex.to_int_index()
+
+        _check(bindex)
+        _check(iindex)
+
+        # corner cases
 
 
 def test_intersect():
@@ -205,6 +278,43 @@ def test_intersect():
 
 
 class TestBlockIndex(tm.TestCase):
+
+    _multiprocess_can_split_ = True
+
+    def test_block_internal(self):
+        idx = _make_index(4, np.array([2, 3], dtype=np.int32), kind='block')
+        self.assertIsInstance(idx, BlockIndex)
+        self.assertEqual(idx.npoints, 2)
+        tm.assert_numpy_array_equal(idx.blocs,
+                                    np.array([2], dtype=np.int32))
+        tm.assert_numpy_array_equal(idx.blengths,
+                                    np.array([2], dtype=np.int32))
+
+        idx = _make_index(4, np.array([], dtype=np.int32), kind='block')
+        self.assertIsInstance(idx, BlockIndex)
+        self.assertEqual(idx.npoints, 0)
+        tm.assert_numpy_array_equal(idx.blocs,
+                                    np.array([], dtype=np.int32))
+        tm.assert_numpy_array_equal(idx.blengths,
+                                    np.array([], dtype=np.int32))
+
+        idx = _make_index(4, np.array([0, 1, 2, 3], dtype=np.int32),
+                          kind='block')
+        self.assertIsInstance(idx, BlockIndex)
+        self.assertEqual(idx.npoints, 4)
+        tm.assert_numpy_array_equal(idx.blocs,
+                                    np.array([0], dtype=np.int32))
+        tm.assert_numpy_array_equal(idx.blengths,
+                                    np.array([4], dtype=np.int32))
+
+        idx = _make_index(4, np.array([0, 2, 3], dtype=np.int32), kind='block')
+        self.assertIsInstance(idx, BlockIndex)
+        self.assertEqual(idx.npoints, 3)
+        tm.assert_numpy_array_equal(idx.blocs,
+                                    np.array([0, 2], dtype=np.int32))
+        tm.assert_numpy_array_equal(idx.blengths,
+                                    np.array([1, 2], dtype=np.int32))
+
     def test_equals(self):
         index = BlockIndex(10, [0, 4], [2, 5])
 
@@ -244,6 +354,29 @@ class TestBlockIndex(tm.TestCase):
 
 
 class TestIntIndex(tm.TestCase):
+
+    _multiprocess_can_split_ = True
+
+    def test_int_internal(self):
+        idx = _make_index(4, np.array([2, 3], dtype=np.int32), kind='integer')
+        self.assertIsInstance(idx, IntIndex)
+        self.assertEqual(idx.npoints, 2)
+        tm.assert_numpy_array_equal(idx.indices,
+                                    np.array([2, 3], dtype=np.int32))
+
+        idx = _make_index(4, np.array([], dtype=np.int32), kind='integer')
+        self.assertIsInstance(idx, IntIndex)
+        self.assertEqual(idx.npoints, 0)
+        tm.assert_numpy_array_equal(idx.indices,
+                                    np.array([], dtype=np.int32))
+
+        idx = _make_index(4, np.array([0, 1, 2, 3], dtype=np.int32),
+                          kind='integer')
+        self.assertIsInstance(idx, IntIndex)
+        self.assertEqual(idx.npoints, 4)
+        tm.assert_numpy_array_equal(idx.indices,
+                                    np.array([0, 1, 2, 3], dtype=np.int32))
+
     def test_equals(self):
         index = IntIndex(10, [0, 1, 2, 3, 4])
         self.assertTrue(index.equals(index))
@@ -269,31 +402,6 @@ class TestIntIndex(tm.TestCase):
 
 
 class TestSparseOperators(tm.TestCase):
-    def _nan_op_tests(self, sparse_op, python_op):
-        def _check_case(xloc, xlen, yloc, ylen, eloc, elen):
-            xindex = BlockIndex(TEST_LENGTH, xloc, xlen)
-            yindex = BlockIndex(TEST_LENGTH, yloc, ylen)
-
-            xdindex = xindex.to_int_index()
-            ydindex = yindex.to_int_index()
-
-            x = np.arange(xindex.npoints) * 10. + 1
-            y = np.arange(yindex.npoints) * 100. + 1
-
-            result_block_vals, rb_index = sparse_op(x, xindex, y, yindex)
-            result_int_vals, ri_index = sparse_op(x, xdindex, y, ydindex)
-
-            self.assertTrue(rb_index.to_int_index().equals(ri_index))
-            assert_equal(result_block_vals, result_int_vals)
-
-            # check versus Series...
-            xseries = Series(x, xdindex.indices)
-            yseries = Series(y, ydindex.indices)
-            series_result = python_op(xseries, yseries).valid()
-            assert_equal(result_block_vals, series_result.values)
-            assert_equal(result_int_vals, series_result.values)
-
-        check_cases(_check_case)
 
     def _op_tests(self, sparse_op, python_op):
         def _check_case(xloc, xlen, yloc, ylen, eloc, elen):
@@ -337,16 +445,6 @@ class TestSparseOperators(tm.TestCase):
 check_ops = ['add', 'sub', 'mul', 'truediv', 'floordiv']
 
 
-def make_nanoptestf(op):
-    def f(self):
-        sparse_op = getattr(splib, 'sparse_nan%s' % op)
-        python_op = getattr(operator, op)
-        self._nan_op_tests(sparse_op, python_op)
-
-    f.__name__ = 'test_nan%s' % op
-    return f
-
-
 def make_optestf(op):
     def f(self):
         sparse_op = getattr(splib, 'sparse_%s' % op)
@@ -358,12 +456,10 @@ def make_optestf(op):
 
 
 for op in check_ops:
-    f = make_nanoptestf(op)
     g = make_optestf(op)
-    setattr(TestSparseOperators, f.__name__, f)
     setattr(TestSparseOperators, g.__name__, g)
-    del f
     del g
+
 
 if __name__ == '__main__':
     import nose  # noqa

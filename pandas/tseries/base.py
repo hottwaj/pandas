@@ -8,10 +8,13 @@ from datetime import datetime, timedelta
 from pandas import compat
 import numpy as np
 from pandas.core import common as com, algorithms
-from pandas.core.common import is_integer, is_float, AbstractMethodError
+from pandas.core.common import (is_integer, is_float, is_bool_dtype,
+                                AbstractMethodError)
+import pandas.formats.printing as printing
 import pandas.tslib as tslib
 import pandas.lib as lib
 from pandas.core.index import Index
+from pandas.indexes.base import _index_shared_docs
 from pandas.util.decorators import Appender, cache_readonly
 import pandas.tseries.frequencies as frequencies
 import pandas.algos as _algos
@@ -121,6 +124,38 @@ class DatetimeIndexOpsMixin(object):
             return results
 
         return wrapper
+
+    def _evaluate_compare(self, other, op):
+        """
+        We have been called because a comparison between
+        8 aware arrays. numpy >= 1.11 will
+        now warn about NaT comparisons
+        """
+
+        # coerce to a similar object
+        if not isinstance(other, type(self)):
+            if not com.is_list_like(other):
+                # scalar
+                other = [other]
+            elif lib.isscalar(lib.item_from_zerodim(other)):
+                # ndarray scalar
+                other = [other.item()]
+            other = type(self)(other)
+
+        # compare
+        result = getattr(self.asi8, op)(other.asi8)
+
+        # technically we could support bool dtyped Index
+        # for now just return the indexing array directly
+        mask = (self._isnan) | (other._isnan)
+        if is_bool_dtype(result):
+            result[mask] = False
+            return result
+        try:
+            result[mask] = tslib.iNaT
+            return Index(result)
+        except TypeError:
+            return result
 
     @property
     def _box_func(self):
@@ -258,22 +293,22 @@ class DatetimeIndexOpsMixin(object):
 
             return self._simple_new(sorted_values, **attribs)
 
+    @Appender(_index_shared_docs['take'])
     def take(self, indices, axis=0, allow_fill=True, fill_value=None):
-        """
-        Analogous to ndarray.take
-        """
         indices = com._ensure_int64(indices)
+
         maybe_slice = lib.maybe_indices_to_slice(indices, len(self))
         if isinstance(maybe_slice, slice):
             return self[maybe_slice]
-        taken = self.asi8.take(com._ensure_platform_int(indices))
 
-        # only fill if we are passing a non-None fill_value
-        if allow_fill and fill_value is not None:
-            mask = indices == -1
-            if mask.any():
-                taken[mask] = tslib.iNaT
-        return self._shallow_copy(taken, freq=None)
+        taken = self._assert_take_fillable(self.asi8, indices,
+                                           allow_fill=allow_fill,
+                                           fill_value=fill_value,
+                                           na_value=tslib.iNaT)
+
+        # keep freq in PeriodIndex, reset otherwise
+        freq = self.freq if isinstance(self, com.ABCPeriodIndex) else None
+        return self._shallow_copy(taken, freq=freq)
 
     def get_duplicates(self):
         values = Index.get_duplicates(self)
@@ -291,6 +326,11 @@ class DatetimeIndexOpsMixin(object):
 
     @property
     def asobject(self):
+        """
+        return object Index which contains boxed values
+
+        *this is an internal non-public method*
+        """
         from pandas.core.index import Index
         return Index(self._box_values(self.asi8), name=self.name, dtype=object)
 
@@ -667,7 +707,7 @@ class DatetimeIndexOpsMixin(object):
 
         if name is None:
             name = type(self).__name__
-        result = '%s: %s entries%s' % (com.pprint_thing(name),
+        result = '%s: %s entries%s' % (printing.pprint_thing(name),
                                        len(self), index_summary)
         if self.freq:
             result += '\nFreq: %s' % self.freqstr

@@ -16,6 +16,7 @@ from pandas import (Series, DataFrame, Panel, MultiIndex, Int64Index,
                     isnull)
 
 from pandas.compat import is_platform_windows, PY3, PY35
+from pandas.formats.printing import pprint_thing
 from pandas.io.pytables import _tables, TableIterator
 try:
     _tables()
@@ -28,7 +29,6 @@ from pandas.io.pytables import (HDFStore, get_store, Term, read_hdf,
                                 AttributeConflictWarning, DuplicateWarning,
                                 PossibleDataLossError, ClosedFileError)
 from pandas.io import pytables as pytables
-import pandas.core.common as com
 import pandas.util.testing as tm
 from pandas.util.testing import (assert_panel4d_equal,
                                  assert_panel_equal,
@@ -3001,8 +3001,8 @@ class TestHDFStore(Base, tm.TestCase):
         # GH 2931
 
         # make sparse dataframe
-        df = DataFrame(np.random.binomial(
-            n=1, p=.01, size=(1e3, 10))).to_sparse(fill_value=0)
+        arr = np.random.binomial(n=1, p=.01, size=(1000, 10))
+        df = DataFrame(arr).to_sparse(fill_value=0)
 
         # case 1: store uncompressed
         self._check_double_roundtrip(df, tm.assert_frame_equal,
@@ -3015,7 +3015,7 @@ class TestHDFStore(Base, tm.TestCase):
                                      check_frame_type=True)
 
         # set one series to be completely sparse
-        df[0] = np.zeros(1e3)
+        df[0] = np.zeros(1000)
 
         # case 3: store df with completely sparse series uncompressed
         self._check_double_roundtrip(df, tm.assert_frame_equal,
@@ -3806,9 +3806,9 @@ class TestHDFStore(Base, tm.TestCase):
                 expected = df[df.x != 'none']
                 assert_frame_equal(result, expected)
             except Exception as detail:
-                com.pprint_thing("[{0}]".format(detail))
-                com.pprint_thing(store)
-                com.pprint_thing(expected)
+                pprint_thing("[{0}]".format(detail))
+                pprint_thing(store)
+                pprint_thing(expected)
 
             df2 = df.copy()
             df2.loc[df2.x == '', 'x'] = np.nan

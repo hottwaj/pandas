@@ -1,6 +1,7 @@
 <div align="center">
-  <img src="http://pandas.pydata.org/_static/pandas_logo.png"><br>
+  <img src="https://github.com/pydata/pandas/blob/master/doc/logo/pandas_logo.png"><br>
 </div>
+
 -----------------
 
 # pandas: powerful Python data analysis toolkit
@@ -35,6 +36,10 @@
     <img src="https://ci.appveyor.com/api/projects/status/iblk29s98quexwxi/branch/master?svg=true" alt="appveyor build status" />
     </a>
   </td>
+</tr>
+<tr>
+  <td>Coverage</td>
+  <td><img src="https://codecov.io/github/pydata/pandas/coverage.svg?branch=master" alt="coverage" /></td>
 </tr>
 <tr>
   <td>Conda</td>

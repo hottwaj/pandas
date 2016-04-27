@@ -103,6 +103,50 @@ class TestIndex(Base, tm.TestCase):
         self.assertIsInstance(idx2, Index) and self.assertNotInstance(
             idx2, MultiIndex)
 
+    def test_constructor_from_index_datetimetz(self):
+        idx = pd.date_range('2015-01-01 10:00', freq='D', periods=3,
+                            tz='US/Eastern')
+        result = pd.Index(idx)
+        tm.assert_index_equal(result, idx)
+        self.assertEqual(result.tz, idx.tz)
+
+        result = pd.Index(idx.asobject)
+        tm.assert_index_equal(result, idx)
+        self.assertEqual(result.tz, idx.tz)
+
+    def test_constructor_from_index_timedelta(self):
+        idx = pd.timedelta_range('1 days', freq='D', periods=3)
+        result = pd.Index(idx)
+        tm.assert_index_equal(result, idx)
+
+        result = pd.Index(idx.asobject)
+        tm.assert_index_equal(result, idx)
+
+    def test_constructor_from_index_period(self):
+        idx = pd.period_range('2015-01-01', freq='D', periods=3)
+        result = pd.Index(idx)
+        tm.assert_index_equal(result, idx)
+
+        result = pd.Index(idx.asobject)
+        tm.assert_index_equal(result, idx)
+
+    def test_constructor_from_series_datetimetz(self):
+        idx = pd.date_range('2015-01-01 10:00', freq='D', periods=3,
+                            tz='US/Eastern')
+        result = pd.Index(pd.Series(idx))
+        tm.assert_index_equal(result, idx)
+        self.assertEqual(result.tz, idx.tz)
+
+    def test_constructor_from_series_timedelta(self):
+        idx = pd.timedelta_range('1 days', freq='D', periods=3)
+        result = pd.Index(pd.Series(idx))
+        tm.assert_index_equal(result, idx)
+
+    def test_constructor_from_series_period(self):
+        idx = pd.period_range('2015-01-01', freq='D', periods=3)
+        result = pd.Index(pd.Series(idx))
+        tm.assert_index_equal(result, idx)
+
     def test_constructor_from_series(self):
 
         expected = DatetimeIndex([Timestamp('20110101'), Timestamp('20120101'),
@@ -641,11 +685,11 @@ class TestIndex(Base, tm.TestCase):
         self.assertEqual(len(result), 0)
         self.assertEqual(result.name, first.name)
 
-    def test_symmetric_diff(self):
+    def test_symmetric_difference(self):
         # smoke
         idx1 = Index([1, 2, 3, 4], name='idx1')
         idx2 = Index([2, 3, 4, 5])
-        result = idx1.sym_diff(idx2)
+        result = idx1.symmetric_difference(idx2)
         expected = Index([1, 5])
         self.assertTrue(tm.equalContents(result, expected))
         self.assertIsNone(result.name)
@@ -658,7 +702,7 @@ class TestIndex(Base, tm.TestCase):
         # multiIndex
         idx1 = MultiIndex.from_tuples(self.tuples)
         idx2 = MultiIndex.from_tuples([('foo', 1), ('bar', 3)])
-        result = idx1.sym_diff(idx2)
+        result = idx1.symmetric_difference(idx2)
         expected = MultiIndex.from_tuples([('bar', 2), ('baz', 3), ('bar', 3)])
         self.assertTrue(tm.equalContents(result, expected))
 
@@ -667,7 +711,7 @@ class TestIndex(Base, tm.TestCase):
         # and the correct non-nan values are there. punt on sorting.
         idx1 = Index([1, 2, 3, np.nan])
         idx2 = Index([0, 1, np.nan])
-        result = idx1.sym_diff(idx2)
+        result = idx1.symmetric_difference(idx2)
         # expected = Index([0.0, np.nan, 2.0, 3.0, np.nan])
 
         nans = pd.isnull(result)
@@ -679,11 +723,11 @@ class TestIndex(Base, tm.TestCase):
         idx1 = Index([1, 2, 3, 4], name='idx1')
         idx2 = np.array([2, 3, 4, 5])
         expected = Index([1, 5])
-        result = idx1.sym_diff(idx2)
+        result = idx1.symmetric_difference(idx2)
         self.assertTrue(tm.equalContents(result, expected))
         self.assertEqual(result.name, 'idx1')
 
-        result = idx1.sym_diff(idx2, result_name='new_name')
+        result = idx1.symmetric_difference(idx2, result_name='new_name')
         self.assertTrue(tm.equalContents(result, expected))
         self.assertEqual(result.name, 'new_name')
 
@@ -1239,6 +1283,34 @@ class TestIndex(Base, tm.TestCase):
         res = idx.take([-1, 0, 1])
         exp = Index([idx[-1], idx[0], idx[1]])
         tm.assert_index_equal(res, exp)
+
+    def test_take_fill_value(self):
+        # GH 12631
+        idx = pd.Index(list('ABC'), name='xxx')
+        result = idx.take(np.array([1, 0, -1]))
+        expected = pd.Index(list('BAC'), name='xxx')
+        tm.assert_index_equal(result, expected)
+
+        # fill_value
+        result = idx.take(np.array([1, 0, -1]), fill_value=True)
+        expected = pd.Index(['B', 'A', np.nan], name='xxx')
+        tm.assert_index_equal(result, expected)
+
+        # allow_fill=False
+        result = idx.take(np.array([1, 0, -1]), allow_fill=False,
+                          fill_value=True)
+        expected = pd.Index(['B', 'A', 'C'], name='xxx')
+        tm.assert_index_equal(result, expected)
+
+        msg = ('When allow_fill=True and fill_value is not None, '
+               'all indices must be >= -1')
+        with tm.assertRaisesRegexp(ValueError, msg):
+            idx.take(np.array([1, 0, -2]), fill_value=True)
+        with tm.assertRaisesRegexp(ValueError, msg):
+            idx.take(np.array([1, 0, -5]), fill_value=True)
+
+        with tm.assertRaises(IndexError):
+            idx.take(np.array([1, -5]))
 
     def test_reindex_preserves_name_if_target_is_list_or_ndarray(self):
         # GH6552

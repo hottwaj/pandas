@@ -4,7 +4,8 @@ from pandas.compat import zip
 from pandas.core.common import (isnull, notnull, _values_from_object,
                                 is_bool_dtype,
                                 is_list_like, is_categorical_dtype,
-                                is_object_dtype, take_1d)
+                                is_object_dtype)
+from pandas.core.algorithms import take_1d
 import pandas.compat as compat
 from pandas.core.base import AccessorProperty, NoNewAttributesMixin
 from pandas.util.decorators import Appender, deprecate_kwarg
@@ -740,15 +741,6 @@ def str_get_dummies(arr, sep='|'):
     --------
     pandas.get_dummies
     """
-    from pandas.core.frame import DataFrame
-    from pandas.core.index import Index
-
-    # GH9980, Index.str does not support get_dummies() as it returns a frame
-    if isinstance(arr, Index):
-        raise TypeError("get_dummies is not supported for string methods on "
-                        "Index")
-
-    # TODO remove this hack?
     arr = arr.fillna('')
     try:
         arr = sep + arr + sep
@@ -765,7 +757,7 @@ def str_get_dummies(arr, sep='|'):
     for i, t in enumerate(tags):
         pat = sep + t + sep
         dummies[:, i] = lib.map_infer(arr.values, lambda x: pat in x)
-    return DataFrame(dummies, arr.index, tags)
+    return dummies, tags
 
 
 def str_join(arr, sep):
@@ -1328,12 +1320,15 @@ class StringMethods(NoNewAttributesMixin):
         if not isinstance(expand, bool):
             raise ValueError("expand must be True or False")
 
-        if name is None:
-            name = getattr(result, 'name', None)
-        if name is None:
-            # do not use logical or, _orig may be a DataFrame
-            # which has "name" column
-            name = self._orig.name
+        if expand is False:
+            # if expand is False, result should have the same name
+            # as the original otherwise specified
+            if name is None:
+                name = getattr(result, 'name', None)
+            if name is None:
+                # do not use logical or, _orig may be a DataFrame
+                # which has "name" column
+                name = self._orig.name
 
         # Wait until we are sure result is a Series or Index before
         # checking attributes (GH 12180)
@@ -1352,9 +1347,9 @@ class StringMethods(NoNewAttributesMixin):
             index = self._orig.index
             if expand:
                 cons = self._orig._constructor_expanddim
-                return cons(result, index=index)
+                return cons(result, columns=name, index=index)
             else:
-                # Must a Series
+                # Must be a Series
                 cons = self._orig._constructor
                 return cons(result, name=name, index=index)
 
@@ -1585,9 +1580,9 @@ class StringMethods(NoNewAttributesMixin):
         # we need to cast to Series of strings as only that has all
         # methods available for making the dummies...
         data = self._orig.astype(str) if self._is_categorical else self._data
-        result = str_get_dummies(data, sep)
+        result, name = str_get_dummies(data, sep)
         return self._wrap_result(result, use_codes=(not self._is_categorical),
-                                 expand=True)
+                                 name=name, expand=True)
 
     @copy(str_translate)
     def translate(self, table, deletechars=None):

@@ -16,6 +16,7 @@ from pandas.core.nanops import nanall, nanany
 from pandas.core.panel import Panel
 from pandas.core.series import remove_na
 import pandas.core.common as com
+from pandas.formats.printing import pprint_thing
 from pandas import compat
 from pandas.compat import range, lrange, StringIO, OrderedDict, signature
 from pandas import SparsePanel
@@ -371,13 +372,13 @@ class SafeForSparse(object):
             try:
                 check_op(getattr(operator, op), op)
             except:
-                com.pprint_thing("Failing operation: %r" % op)
+                pprint_thing("Failing operation: %r" % op)
                 raise
         if compat.PY3:
             try:
                 check_op(operator.truediv, 'div')
             except:
-                com.pprint_thing("Failing operation: %r" % 'div')
+                pprint_thing("Failing operation: %r" % 'div')
                 raise
 
     @ignore_sparse_panel_future_warning
@@ -1528,6 +1529,24 @@ class TestPanel(tm.TestCase, PanelTests, CheckIndexing, SafeForLongAndSparse,
         p.iloc[0:2, 0:2, 0:2] = np.nan
         self.assertRaises(NotImplementedError, lambda: p.fillna(999, limit=1))
 
+        # Test in place fillNA
+        # Expected result
+        expected = Panel([[[0, 1], [2, 1]], [[10, 11], [12, 11]]],
+                         items=['a', 'b'], minor_axis=['x', 'y'],
+                         dtype=np.float64)
+        # method='ffill'
+        p1 = Panel([[[0, 1], [2, np.nan]], [[10, 11], [12, np.nan]]],
+                   items=['a', 'b'], minor_axis=['x', 'y'],
+                   dtype=np.float64)
+        p1.fillna(method='ffill', inplace=True)
+        assert_panel_equal(p1, expected)
+
+        # method='bfill'
+        p2 = Panel([[[0, np.nan], [2, 1]], [[10, np.nan], [12, 11]]],
+                   items=['a', 'b'], minor_axis=['x', 'y'], dtype=np.float64)
+        p2.fillna(method='bfill', inplace=True)
+        assert_panel_equal(p2, expected)
+
     def test_ffill_bfill(self):
         assert_panel_equal(self.panel.ffill(),
                            self.panel.fillna(method='ffill'))
@@ -2064,8 +2083,7 @@ class TestPanel(tm.TestCase, PanelTests, CheckIndexing, SafeForLongAndSparse,
             raise nose.SkipTest("need xlwt xlrd openpyxl")
 
         for ext in ['xls', 'xlsx']:
-            path = '__tmp__.' + ext
-            with ensure_clean(path) as path:
+            with ensure_clean('__tmp__.' + ext) as path:
                 self.panel.to_excel(path)
                 try:
                     reader = ExcelFile(path)
@@ -2084,8 +2102,7 @@ class TestPanel(tm.TestCase, PanelTests, CheckIndexing, SafeForLongAndSparse,
         except ImportError:
             raise nose.SkipTest("Requires xlrd and xlsxwriter. Skipping test.")
 
-        path = '__tmp__.xlsx'
-        with ensure_clean(path) as path:
+        with ensure_clean('__tmp__.xlsx') as path:
             self.panel.to_excel(path, engine='xlsxwriter')
             try:
                 reader = ExcelFile(path)
@@ -2142,8 +2159,8 @@ class TestPanel(tm.TestCase, PanelTests, CheckIndexing, SafeForLongAndSparse,
                     actual = panel.drop(drop_val, axis=alias)
                     assert_panel_equal(actual, expected)
             except AssertionError:
-                com.pprint_thing("Failed with axis_number %d and aliases: %s" %
-                                 (axis_number, aliases))
+                pprint_thing("Failed with axis_number %d and aliases: %s" %
+                             (axis_number, aliases))
                 raise
         # Items
         expected = Panel({"One": df})

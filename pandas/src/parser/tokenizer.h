@@ -124,6 +124,8 @@ typedef enum {
     EAT_LINE_COMMENT,
     WHITESPACE_LINE,
     SKIP_LINE,
+    QUOTE_IN_SKIP_LINE,
+    QUOTE_IN_QUOTE_IN_SKIP_LINE,
     FINISHED
 } ParserState;
 
@@ -183,6 +185,8 @@ typedef struct parser_t {
     char commentchar;
     int allow_embedded_newline;
     int strict;                 /* raise exception on bad CSV */
+
+    int usecols; // Boolean: 1: usecols provided, 0: none provided
 
     int expected_fields;
     int error_bad_lines;

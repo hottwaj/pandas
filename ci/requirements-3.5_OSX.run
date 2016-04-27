@@ -1,11 +1,9 @@
-python-dateutil
 pytz
-numpy
+numpy=1.10.4
 openpyxl
 xlsxwriter
 xlrd
 xlwt
-scipy
 numexpr
 pytables
 html5lib

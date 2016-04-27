@@ -17,10 +17,12 @@ from pandas.tseries.period import PeriodIndex
 from pandas.core.internals import BlockManager
 import pandas.core.algorithms as algos
 import pandas.core.common as com
-import pandas.core.missing as mis
+import pandas.core.missing as missing
 import pandas.core.datetools as datetools
+from pandas.formats.printing import pprint_thing
 from pandas import compat
-from pandas.compat import map, zip, lrange, string_types, isidentifier
+from pandas.compat import (map, zip, lrange, string_types,
+                           isidentifier, set_function_name)
 from pandas.core.common import (isnull, notnull, is_list_like,
                                 _values_from_object, _maybe_promote,
                                 _maybe_box_datetimelike, ABCSeries,
@@ -28,6 +30,7 @@ from pandas.core.common import (isnull, notnull, is_list_like,
                                 AbstractMethodError)
 import pandas.core.nanops as nanops
 from pandas.util.decorators import Appender, Substitution, deprecate_kwarg
+from pandas.util.validators import validate_kwargs
 from pandas.core import config
 
 # goal is to be able to define the docs close to function, while still being
@@ -50,9 +53,9 @@ def _single_replace(self, to_replace, method, inplace, limit):
 
     orig_dtype = self.dtype
     result = self if inplace else self.copy()
-    fill_f = mis._get_fill_func(method)
+    fill_f = missing.get_fill_func(method)
 
-    mask = com.mask_missing(result.values, to_replace)
+    mask = missing.mask_missing(result.values, to_replace)
     values = fill_f(result.values, limit=limit, mask=mask)
 
     if values.dtype == orig_dtype and inplace:
@@ -80,7 +83,7 @@ class NDFrame(PandasObject):
     copy : boolean, default False
     """
     _internal_names = ['_data', '_cacher', '_item_cache', '_cache', 'is_copy',
-                       '_subtyp', '_index', '_default_kind',
+                       '_subtyp', '_name', '_index', '_default_kind',
                        '_default_fill_value', '_metadata', '__array_struct__',
                        '__array_interface__']
     _internal_names_set = set(_internal_names)
@@ -148,7 +151,7 @@ class NDFrame(PandasObject):
     def __unicode__(self):
         # unicode representation based upon iterating over self
         # (since, by definition, `PandasContainers` are iterable)
-        prepr = '[%s]' % ','.join(map(com.pprint_thing, self))
+        prepr = '[%s]' % ','.join(map(pprint_thing, self))
         return '%s(%s)' % (self.__class__.__name__, prepr)
 
     def _dir_additions(self):
@@ -519,7 +522,7 @@ class NDFrame(PandasObject):
         except:
             return self
 
-    def swaplevel(self, i, j, axis=0):
+    def swaplevel(self, i=-2, j=-1, axis=0):
         """
         Swap levels i and j in a MultiIndex on a particular axis
 
@@ -531,6 +534,12 @@ class NDFrame(PandasObject):
         Returns
         -------
         swapped : type of caller (new object)
+
+        .. versionchanged:: 0.18.1
+
+           The indexes ``i`` and ``j`` are now optional, and default to
+           the two innermost levels of the index.
+
         """
         axis = self._get_axis_number(axis)
         result = self.copy()
@@ -700,12 +709,9 @@ class NDFrame(PandasObject):
         1    2  5
         2    3  6
         """
-        is_scalar_or_list = (
-            (not com.is_sequence(mapper) and not callable(mapper)) or
-            (com.is_list_like(mapper) and not com.is_dict_like(mapper))
-        )
-
-        if is_scalar_or_list:
+        non_mapper = lib.isscalar(mapper) or (com.is_list_like(mapper) and not
+                                              com.is_dict_like(mapper))
+        if non_mapper:
             return self._set_axis_name(mapper, axis=axis)
         else:
             axis = self._get_axis_name(axis)
@@ -1754,7 +1760,6 @@ class NDFrame(PandasObject):
                 new_index = self.index[loc]
 
         if lib.isscalar(loc):
-            from pandas import Series
             new_values = self._data.fast_xs(loc)
 
             # may need to box a datelike-scalar
@@ -1765,9 +1770,9 @@ class NDFrame(PandasObject):
             if not is_list_like(new_values) or self.ndim == 1:
                 return _maybe_box_datetimelike(new_values)
 
-            result = Series(new_values, index=self.columns,
-                            name=self.index[loc], copy=copy,
-                            dtype=new_values.dtype)
+            result = self._constructor_sliced(new_values, index=self.columns,
+                                              name=self.index[loc], copy=copy,
+                                              dtype=new_values.dtype)
 
         else:
             result = self.iloc[loc]
@@ -1883,8 +1888,7 @@ class NDFrame(PandasObject):
             if level is not None:
                 if not isinstance(axis, MultiIndex):
                     raise AssertionError('axis must be a MultiIndex')
-                indexer = ~lib.ismember(
-                    axis.get_level_values(level).values, set(labels))
+                indexer = ~axis.get_level_values(level).isin(labels)
             else:
                 indexer = ~axis.isin(labels)
 
@@ -2193,7 +2197,7 @@ class NDFrame(PandasObject):
 
         # construct the args
         axes, kwargs = self._construct_axes_from_arguments(args, kwargs)
-        method = mis._clean_reindex_fill_method(kwargs.pop('method', None))
+        method = missing.clean_reindex_fill_method(kwargs.pop('method', None))
         level = kwargs.pop('level', None)
         copy = kwargs.pop('copy', True)
         limit = kwargs.pop('limit', None)
@@ -2308,7 +2312,7 @@ class NDFrame(PandasObject):
 
         axis_name = self._get_axis_name(axis)
         axis_values = self._get_axis(axis_name)
-        method = mis._clean_reindex_fill_method(method)
+        method = missing.clean_reindex_fill_method(method)
         new_index, indexer = axis_values.reindex(labels, method, level,
                                                  limit=limit)
         return self._reindex_with_indexers({axis: [new_index, indexer]},
@@ -2949,12 +2953,18 @@ class NDFrame(PandasObject):
 
     def copy(self, deep=True):
         """
-        Make a copy of this object
+        Make a copy of this objects data.
 
         Parameters
         ----------
         deep : boolean or string, default True
-            Make a deep copy, i.e. also copy data
+            Make a deep copy, including a copy of the data and the indices.
+            With ``deep=False`` neither the indices or the data are copied.
+
+            Note that when ``deep=True`` data is copied, actual python objects
+            will not be copied recursively, only the reference to the object.
+            This is in contrast to ``copy.deepcopy`` in the Standard Library,
+            which recursively copies object data.
 
         Returns
         -------
@@ -3097,7 +3107,7 @@ class NDFrame(PandasObject):
         if axis is None:
             axis = 0
         axis = self._get_axis_number(axis)
-        method = mis._clean_fill_method(method)
+        method = missing.clean_fill_method(method)
 
         from pandas import DataFrame
         if value is None:
@@ -3124,13 +3134,17 @@ class NDFrame(PandasObject):
                 # fill in 2d chunks
                 result = dict([(col, s.fillna(method=method, value=value))
                                for col, s in self.iteritems()])
-                return self._constructor.from_dict(result).__finalize__(self)
+                new_obj = self._constructor.\
+                    from_dict(result).__finalize__(self)
+                new_data = new_obj._data
 
-            # 2d or less
-            method = mis._clean_fill_method(method)
-            new_data = self._data.interpolate(method=method, axis=axis,
-                                              limit=limit, inplace=inplace,
-                                              coerce=True, downcast=downcast)
+            else:
+                # 2d or less
+                method = missing.clean_fill_method(method)
+                new_data = self._data.interpolate(method=method, axis=axis,
+                                                  limit=limit, inplace=inplace,
+                                                  coerce=True,
+                                                  downcast=downcast)
         else:
             if method is not None:
                 raise ValueError('cannot specify both a fill method and value')
@@ -3431,11 +3445,7 @@ class NDFrame(PandasObject):
         else:
             return self._constructor(new_data).__finalize__(self)
 
-    def interpolate(self, method='linear', axis=0, limit=None, inplace=False,
-                    limit_direction='forward', downcast=None, **kwargs):
-        """
-        Interpolate values according to different methods.
-
+    _shared_docs['interpolate'] = """
         Please note that only ``method='linear'`` is supported for
         DataFrames/Series with a MultiIndex.
 
@@ -3443,7 +3453,8 @@ class NDFrame(PandasObject):
         ----------
         method : {'linear', 'time', 'index', 'values', 'nearest', 'zero',
                   'slinear', 'quadratic', 'cubic', 'barycentric', 'krogh',
-                  'polynomial', 'spline' 'piecewise_polynomial', 'pchip'}
+                  'polynomial', 'spline' 'piecewise_polynomial', 'pchip',
+                  'akima'}
 
             * 'linear': ignore the index and treat the values as equally
               spaced. This is the only method supported on MultiIndexes.
@@ -3457,12 +3468,15 @@ class NDFrame(PandasObject):
               require that you also specify an `order` (int),
               e.g. df.interpolate(method='polynomial', order=4).
               These use the actual numerical values of the index.
-            * 'krogh', 'piecewise_polynomial', 'spline', and 'pchip' are all
+            * 'krogh', 'piecewise_polynomial', 'spline', 'pchip' and 'akima' are all
               wrappers around the scipy interpolation methods of similar
               names. These use the actual numerical values of the index. See
               the scipy documentation for more on their behavior
               `here <http://docs.scipy.org/doc/scipy/reference/interpolate.html#univariate-interpolation>`__  # noqa
               `and here <http://docs.scipy.org/doc/scipy/reference/tutorial/interpolate.html>`__  # noqa
+
+            .. versionadded:: 0.18.1
+               Added support for the 'akima' method
 
         axis : {0, 1}, default 0
             * 0: fill column-by-column
@@ -3503,6 +3517,14 @@ class NDFrame(PandasObject):
         dtype: float64
 
         """
+
+    @Appender(_shared_docs['interpolate'] % _shared_doc_kwargs)
+    def interpolate(self, method='linear', axis=0, limit=None, inplace=False,
+                    limit_direction='forward', downcast=None, **kwargs):
+        """
+        Interpolate values according to different methods.
+        """
+
         if self.ndim > 2:
             raise NotImplementedError("Interpolate has not been implemented "
                                       "on Panel and Panel 4D objects.")
@@ -3693,7 +3715,7 @@ class NDFrame(PandasObject):
         return self.where(subset, threshold, axis=axis)
 
     def groupby(self, by=None, axis=0, level=None, as_index=True, sort=True,
-                group_keys=True, squeeze=False):
+                group_keys=True, squeeze=False, **kwargs):
         """
         Group series using mapper (dict or key function, apply given function
         to group, return result as series) or by a series of columns.
@@ -3745,7 +3767,8 @@ class NDFrame(PandasObject):
             raise TypeError("You have to supply one of 'by' and 'level'")
         axis = self._get_axis_number(axis)
         return groupby(self, by=by, axis=axis, level=level, as_index=as_index,
-                       sort=sort, group_keys=group_keys, squeeze=squeeze)
+                       sort=sort, group_keys=group_keys, squeeze=squeeze,
+                       **kwargs)
 
     def asfreq(self, freq, method=None, how=None, normalize=False):
         """
@@ -4115,7 +4138,7 @@ class NDFrame(PandasObject):
               fill_value=None, method=None, limit=None, fill_axis=0,
               broadcast_axis=None):
         from pandas import DataFrame, Series
-        method = mis._clean_fill_method(method)
+        method = missing.clean_fill_method(method)
 
         if broadcast_axis == 1 and self.ndim != other.ndim:
             if isinstance(self, Series):
@@ -4891,7 +4914,9 @@ class NDFrame(PandasObject):
             for name in idxnames:
                 if name not in names:
                     names.append(name)
+
         d = pd.concat(ldesc, join_axes=pd.Index([names]), axis=1)
+        d.columns = self.columns._shallow_copy(values=d.columns.values)
         d.columns.names = data.columns.names
         return d
 
@@ -4968,11 +4993,11 @@ class NDFrame(PandasObject):
         axis_descr, name, name2 = _doc_parms(cls)
 
         cls.any = _make_logical_function(
-            'any', name, name2, axis_descr,
+            cls, 'any', name, name2, axis_descr,
             'Return whether any element is True over requested axis',
             nanops.nanany)
         cls.all = _make_logical_function(
-            'all', name, name2, axis_descr,
+            cls, 'all', name, name2, axis_descr,
             'Return whether all elements are True over requested axis',
             nanops.nanall)
 
@@ -5000,18 +5025,18 @@ class NDFrame(PandasObject):
         cls.mad = mad
 
         cls.sem = _make_stat_function_ddof(
-            'sem', name, name2, axis_descr,
+            cls, 'sem', name, name2, axis_descr,
             "Return unbiased standard error of the mean over requested "
             "axis.\n\nNormalized by N-1 by default. This can be changed "
             "using the ddof argument",
             nanops.nansem)
         cls.var = _make_stat_function_ddof(
-            'var', name, name2, axis_descr,
+            cls, 'var', name, name2, axis_descr,
             "Return unbiased variance over requested axis.\n\nNormalized by "
             "N-1 by default. This can be changed using the ddof argument",
             nanops.nanvar)
         cls.std = _make_stat_function_ddof(
-            'std', name, name2, axis_descr,
+            cls, 'std', name, name2, axis_descr,
             "Return sample standard deviation over requested axis."
             "\n\nNormalized by N-1 by default. This can be changed using the "
             "ddof argument",
@@ -5030,54 +5055,54 @@ class NDFrame(PandasObject):
         cls.compound = compound
 
         cls.cummin = _make_cum_function(
-            'min', name, name2, axis_descr, "cumulative minimum",
+            cls, 'cummin', name, name2, axis_descr, "cumulative minimum",
             lambda y, axis: np.minimum.accumulate(y, axis), np.inf, np.nan)
         cls.cumsum = _make_cum_function(
-            'sum', name, name2, axis_descr, "cumulative sum",
+            cls, 'cumsum', name, name2, axis_descr, "cumulative sum",
             lambda y, axis: y.cumsum(axis), 0., np.nan)
         cls.cumprod = _make_cum_function(
-            'prod', name, name2, axis_descr, "cumulative product",
+            cls, 'cumprod', name, name2, axis_descr, "cumulative product",
             lambda y, axis: y.cumprod(axis), 1., np.nan)
         cls.cummax = _make_cum_function(
-            'max', name, name2, axis_descr, "cumulative max",
+            cls, 'cummax', name, name2, axis_descr, "cumulative max",
             lambda y, axis: np.maximum.accumulate(y, axis), -np.inf, np.nan)
 
         cls.sum = _make_stat_function(
-            'sum', name, name2, axis_descr,
+            cls, 'sum', name, name2, axis_descr,
             'Return the sum of the values for the requested axis',
             nanops.nansum)
         cls.mean = _make_stat_function(
-            'mean', name, name2, axis_descr,
+            cls, 'mean', name, name2, axis_descr,
             'Return the mean of the values for the requested axis',
             nanops.nanmean)
         cls.skew = _make_stat_function(
-            'skew', name, name2, axis_descr,
+            cls, 'skew', name, name2, axis_descr,
             'Return unbiased skew over requested axis\nNormalized by N-1',
             nanops.nanskew)
         cls.kurt = _make_stat_function(
-            'kurt', name, name2, axis_descr,
+            cls, 'kurt', name, name2, axis_descr,
             "Return unbiased kurtosis over requested axis using Fisher's "
             "definition of\nkurtosis (kurtosis of normal == 0.0). Normalized "
             "by N-1\n",
             nanops.nankurt)
         cls.kurtosis = cls.kurt
         cls.prod = _make_stat_function(
-            'prod', name, name2, axis_descr,
+            cls, 'prod', name, name2, axis_descr,
             'Return the product of the values for the requested axis',
             nanops.nanprod)
         cls.product = cls.prod
         cls.median = _make_stat_function(
-            'median', name, name2, axis_descr,
+            cls, 'median', name, name2, axis_descr,
             'Return the median of the values for the requested axis',
             nanops.nanmedian)
         cls.max = _make_stat_function(
-            'max', name, name2, axis_descr,
+            cls, 'max', name, name2, axis_descr,
             """This method returns the maximum of the values in the object.
             If you want the *index* of the maximum, use ``idxmax``. This is
             the equivalent of the ``numpy.ndarray`` method ``argmax``.""",
             nanops.nanmax)
         cls.min = _make_stat_function(
-            'min', name, name2, axis_descr,
+            cls, 'min', name, name2, axis_descr,
             """This method returns the minimum of the values in the object.
             If you want the *index* of the minimum, use ``idxmin``. This is
             the equivalent of the ``numpy.ndarray`` method ``argmin``.""",
@@ -5097,7 +5122,7 @@ class NDFrame(PandasObject):
             return nmax - nmin
 
         cls.ptp = _make_stat_function(
-            'ptp', name, name2, axis_descr,
+            cls, 'ptp', name, name2, axis_descr,
             """Returns the difference between the maximum value and the
             minimum value in the object. This is the equivalent of the
             ``numpy.ndarray`` method ``ptp``.""",
@@ -5230,29 +5255,13 @@ Returns
 %(outname)s : %(name1)s\n"""
 
 
-def _validate_kwargs(fname, kwargs, *compat_args):
-    """
-    Checks whether parameters passed to the
-    **kwargs argument in a 'stat' function 'fname'
-    are valid parameters as specified in *compat_args
-
-    """
-    list(map(kwargs.__delitem__, filter(
-        kwargs.__contains__, compat_args)))
-    if kwargs:
-        bad_arg = list(kwargs)[0]  # first 'key' element
-        raise TypeError(("{fname}() got an unexpected "
-                         "keyword argument '{arg}'".
-                         format(fname=fname, arg=bad_arg)))
-
-
-def _make_stat_function(name, name1, name2, axis_descr, desc, f):
+def _make_stat_function(cls, name, name1, name2, axis_descr, desc, f):
     @Substitution(outname=name, desc=desc, name1=name1, name2=name2,
                   axis_descr=axis_descr)
     @Appender(_num_doc)
     def stat_func(self, axis=None, skipna=None, level=None, numeric_only=None,
                   **kwargs):
-        _validate_kwargs(name, kwargs, 'out', 'dtype')
+        validate_kwargs(name, kwargs, 'out', 'dtype')
         if skipna is None:
             skipna = True
         if axis is None:
@@ -5263,17 +5272,16 @@ def _make_stat_function(name, name1, name2, axis_descr, desc, f):
         return self._reduce(f, name, axis=axis, skipna=skipna,
                             numeric_only=numeric_only)
 
-    stat_func.__name__ = name
-    return stat_func
+    return set_function_name(stat_func, name, cls)
 
 
-def _make_stat_function_ddof(name, name1, name2, axis_descr, desc, f):
+def _make_stat_function_ddof(cls, name, name1, name2, axis_descr, desc, f):
     @Substitution(outname=name, desc=desc, name1=name1, name2=name2,
                   axis_descr=axis_descr)
     @Appender(_num_ddof_doc)
     def stat_func(self, axis=None, skipna=None, level=None, ddof=1,
                   numeric_only=None, **kwargs):
-        _validate_kwargs(name, kwargs, 'out', 'dtype')
+        validate_kwargs(name, kwargs, 'out', 'dtype')
         if skipna is None:
             skipna = True
         if axis is None:
@@ -5284,18 +5292,17 @@ def _make_stat_function_ddof(name, name1, name2, axis_descr, desc, f):
         return self._reduce(f, name, axis=axis, numeric_only=numeric_only,
                             skipna=skipna, ddof=ddof)
 
-    stat_func.__name__ = name
-    return stat_func
+    return set_function_name(stat_func, name, cls)
 
 
-def _make_cum_function(name, name1, name2, axis_descr, desc, accum_func,
+def _make_cum_function(cls, name, name1, name2, axis_descr, desc, accum_func,
                        mask_a, mask_b):
     @Substitution(outname=name, desc=desc, name1=name1, name2=name2,
                   axis_descr=axis_descr)
     @Appender("Return cumulative {0} over requested axis.".format(name) +
               _cnum_doc)
-    def func(self, axis=None, dtype=None, out=None, skipna=True, **kwargs):
-        _validate_kwargs(name, kwargs, 'out', 'dtype')
+    def cum_func(self, axis=None, dtype=None, out=None, skipna=True, **kwargs):
+        validate_kwargs(name, kwargs, 'out', 'dtype')
         if axis is None:
             axis = self._stat_axis_number
         else:
@@ -5320,17 +5327,16 @@ def _make_cum_function(name, name1, name2, axis_descr, desc, accum_func,
         d['copy'] = False
         return self._constructor(result, **d).__finalize__(self)
 
-    func.__name__ = name
-    return func
+    return set_function_name(cum_func, name, cls)
 
 
-def _make_logical_function(name, name1, name2, axis_descr, desc, f):
+def _make_logical_function(cls, name, name1, name2, axis_descr, desc, f):
     @Substitution(outname=name, desc=desc, name1=name1, name2=name2,
                   axis_descr=axis_descr)
     @Appender(_bool_doc)
     def logical_func(self, axis=None, bool_only=None, skipna=None, level=None,
                      **kwargs):
-        _validate_kwargs(name, kwargs, 'out', 'dtype')
+        validate_kwargs(name, kwargs, 'out', 'dtype')
         if skipna is None:
             skipna = True
         if axis is None:
@@ -5345,8 +5351,8 @@ def _make_logical_function(name, name1, name2, axis_descr, desc, f):
                             numeric_only=bool_only, filter_type='bool',
                             name=name)
 
-    logical_func.__name__ = name
-    return logical_func
+    return set_function_name(logical_func, name, cls)
+
 
 # install the indexes
 for _name, _indexer in indexing.get_indexers_list():

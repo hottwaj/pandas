@@ -12,10 +12,10 @@ from pandas import (Index, Series, DataFrame, Panel, isnull,
                     date_range, period_range, Panel4D)
 from pandas.core.index import MultiIndex
 
-import pandas.core.common as com
+import pandas.formats.printing as printing
 import pandas.lib as lib
 
-from pandas.compat import range, zip
+from pandas.compat import range, zip, PY3
 from pandas import compat
 from pandas.util.testing import (assertRaisesRegexp,
                                  assert_series_equal,
@@ -33,6 +33,13 @@ def _skip_if_no_pchip():
         from scipy.interpolate import pchip_interpolate  # noqa
     except ImportError:
         raise nose.SkipTest('scipy.interpolate.pchip missing')
+
+
+def _skip_if_no_akima():
+    try:
+        from scipy.interpolate import Akima1DInterpolator  # noqa
+    except ImportError:
+        raise nose.SkipTest('scipy.interpolate.Akima1DInterpolator missing')
 
 # ----------------------------------------------------------------------
 # Generic types test cases
@@ -88,20 +95,52 @@ class Generic(object):
     def test_rename(self):
 
         # single axis
+        idx = list('ABCD')
+        # relabeling values passed into self.rename
+        args = [
+            str.lower,
+            {x: x.lower() for x in idx},
+            Series({x: x.lower() for x in idx}),
+        ]
+
         for axis in self._axes():
-            kwargs = {axis: list('ABCD')}
+            kwargs = {axis: idx}
             obj = self._construct(4, **kwargs)
 
-            # no values passed
-            # self.assertRaises(Exception, o.rename(str.lower))
-
-            # rename a single axis
-            result = obj.rename(**{axis: str.lower})
-            expected = obj.copy()
-            setattr(expected, axis, list('abcd'))
-            self._compare(result, expected)
+            for arg in args:
+                # rename a single axis
+                result = obj.rename(**{axis: arg})
+                expected = obj.copy()
+                setattr(expected, axis, list('abcd'))
+                self._compare(result, expected)
 
         # multiple axes at once
+
+    def test_rename_axis(self):
+        idx = list('ABCD')
+        # relabeling values passed into self.rename
+        args = [
+            str.lower,
+            {x: x.lower() for x in idx},
+            Series({x: x.lower() for x in idx}),
+        ]
+
+        for axis in self._axes():
+            kwargs = {axis: idx}
+            obj = self._construct(4, **kwargs)
+
+            for arg in args:
+                # rename a single axis
+                result = obj.rename_axis(arg, axis=axis)
+                expected = obj.copy()
+                setattr(expected, axis, list('abcd'))
+                self._compare(result, expected)
+            # scalar values
+            for arg in ['foo', None]:
+                result = obj.rename_axis(arg, axis=axis)
+                expected = obj.copy()
+                getattr(expected, axis).name = arg
+                self._compare(result, expected)
 
     def test_get_numeric_data(self):
 
@@ -176,7 +215,7 @@ class Generic(object):
 
         def f():
             if obj1:
-                com.pprint_thing("this works and shouldn't")
+                printing.pprint_thing("this works and shouldn't")
 
         self.assertRaises(ValueError, f)
         self.assertRaises(ValueError, lambda: obj1 and obj2)
@@ -517,6 +556,18 @@ class Generic(object):
         with assertRaisesRegexp(TypeError, 'unexpected keyword'):
             obj.any(epic=starwars)  # logical_function
 
+    def test_api_compat(self):
+
+        # GH 12021
+        # compat for __name__, __qualname__
+
+        obj = self._construct(5)
+        for func in ['sum', 'cumsum', 'any', 'var']:
+            f = getattr(obj, func)
+            self.assertEqual(f.__name__, func)
+            if PY3:
+                self.assertTrue(f.__qualname__.endswith(func))
+
 
 class TestSeries(tm.TestCase, Generic):
     _typ = Series
@@ -690,7 +741,7 @@ class TestSeries(tm.TestCase, Generic):
         non_ts[0] = np.NaN
         self.assertRaises(ValueError, non_ts.interpolate, method='time')
 
-    def test_interp_regression(self):
+    def test_interpolate_pchip(self):
         tm._skip_if_no_scipy()
         _skip_if_no_pchip()
 
@@ -702,6 +753,21 @@ class TestSeries(tm.TestCase, Generic):
         interp_s = ser.reindex(new_index).interpolate(method='pchip')
         # does not blow up, GH5977
         interp_s[49:51]
+
+    def test_interpolate_akima(self):
+        tm._skip_if_no_scipy()
+        _skip_if_no_akima()
+
+        ser = Series([10, 11, 12, 13])
+
+        expected = Series([11.00, 11.25, 11.50, 11.75,
+                           12.00, 12.25, 12.50, 12.75, 13.00],
+                          index=Index([1.0, 1.25, 1.5, 1.75,
+                                       2.0, 2.25, 2.5, 2.75, 3.0]))
+        # interpolate at new_index
+        new_index = ser.index.union(Index([1.25, 1.5, 1.75, 2.25, 2.5, 2.75]))
+        interp_s = ser.reindex(new_index).interpolate(method='akima')
+        assert_series_equal(interp_s[1:3], expected)
 
     def test_interpolate_corners(self):
         s = Series([np.nan, np.nan])

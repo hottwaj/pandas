@@ -8,24 +8,23 @@ from pandas.tseries.base import DatelikeOps, DatetimeIndexOpsMixin
 from pandas.tseries.tools import parse_time_string
 import pandas.tseries.offsets as offsets
 
-from pandas._period import Period
 import pandas._period as period
-from pandas._period import (
-    get_period_field_arr,
-    _validate_end_alias,
-    _quarter_to_myear,
-)
+from pandas._period import (Period, IncompatibleFrequency,
+                            get_period_field_arr, _validate_end_alias,
+                            _quarter_to_myear)
+
+from pandas.core.base import _shared_docs
 
 import pandas.core.common as com
 from pandas.core.common import (isnull, _INT64_DTYPE, _maybe_box,
                                 _values_from_object, ABCSeries,
                                 is_integer, is_float, is_object_dtype)
 from pandas import compat
-from pandas.util.decorators import cache_readonly
-
+from pandas.util.decorators import Appender, cache_readonly, Substitution
 from pandas.lib import Timedelta
 import pandas.lib as lib
 import pandas.tslib as tslib
+import pandas.core.missing as missing
 from pandas.compat import zip, u
 
 
@@ -69,18 +68,18 @@ def _period_index_cmp(opname, nat_result=False):
             other_base, _ = _gfc(other.freq)
             if other.freq != self.freq:
                 msg = _DIFFERENT_FREQ_INDEX.format(self.freqstr, other.freqstr)
-                raise ValueError(msg)
+                raise IncompatibleFrequency(msg)
 
             result = func(other.ordinal)
         elif isinstance(other, PeriodIndex):
             if other.freq != self.freq:
                 msg = _DIFFERENT_FREQ_INDEX.format(self.freqstr, other.freqstr)
-                raise ValueError(msg)
+                raise IncompatibleFrequency(msg)
 
             result = getattr(self.values, opname)(other.values)
 
-            mask = (com.mask_missing(self.values, tslib.iNaT) |
-                    com.mask_missing(other.values, tslib.iNaT))
+            mask = (missing.mask_missing(self.values, tslib.iNaT) |
+                    missing.mask_missing(other.values, tslib.iNaT))
             if mask.any():
                 result[mask] = nat_result
 
@@ -388,16 +387,18 @@ class PeriodIndex(DatelikeOps, DatetimeIndexOpsMixin, Int64Index):
             return Index(self.values, dtype)
         raise ValueError('Cannot cast PeriodIndex to dtype %s' % dtype)
 
-    def searchsorted(self, key, side='left'):
+    @Substitution(klass='PeriodIndex', value='key')
+    @Appender(_shared_docs['searchsorted'])
+    def searchsorted(self, key, side='left', sorter=None):
         if isinstance(key, Period):
             if key.freq != self.freq:
                 msg = _DIFFERENT_FREQ_INDEX.format(self.freqstr, key.freqstr)
-                raise ValueError(msg)
+                raise IncompatibleFrequency(msg)
             key = key.ordinal
         elif isinstance(key, compat.string_types):
             key = Period(key, freq=self.freq).ordinal
 
-        return self.values.searchsorted(key, side=side)
+        return self.values.searchsorted(key, side=side, sorter=sorter)
 
     @property
     def is_all_dates(self):
@@ -573,6 +574,8 @@ class PeriodIndex(DatelikeOps, DatetimeIndexOpsMixin, Int64Index):
             base = frequencies.get_base_alias(freqstr)
             if base == self.freq.rule_code:
                 return other.n
+            msg = _DIFFERENT_FREQ_INDEX.format(self.freqstr, other.freqstr)
+            raise IncompatibleFrequency(msg)
         elif isinstance(other, np.ndarray):
             if com.is_integer_dtype(other):
                 return other
@@ -583,8 +586,9 @@ class PeriodIndex(DatelikeOps, DatetimeIndexOpsMixin, Int64Index):
                     offset_nanos = tslib._delta_to_nanoseconds(offset)
                     if (nanos % offset_nanos).all() == 0:
                         return nanos // offset_nanos
+        # raise when input doesn't have freq
         msg = "Input has different freq from PeriodIndex(freq={0})"
-        raise ValueError(msg.format(self.freqstr))
+        raise IncompatibleFrequency(msg.format(self.freqstr))
 
     def _add_delta(self, other):
         ordinal_delta = self._maybe_convert_timedelta(other)
@@ -663,8 +667,8 @@ class PeriodIndex(DatelikeOps, DatetimeIndexOpsMixin, Int64Index):
 
     def get_indexer(self, target, method=None, limit=None, tolerance=None):
         if hasattr(target, 'freq') and target.freq != self.freq:
-            raise ValueError('target and index have different freq: '
-                             '(%s, %s)' % (target.freq, self.freq))
+            msg = _DIFFERENT_FREQ_INDEX.format(self.freqstr, target.freqstr)
+            raise IncompatibleFrequency(msg)
         return Index.get_indexer(self, target, method, limit, tolerance)
 
     def get_loc(self, key, method=None, tolerance=None):
@@ -801,7 +805,7 @@ class PeriodIndex(DatelikeOps, DatetimeIndexOpsMixin, Int64Index):
 
         if self.freq != other.freq:
             msg = _DIFFERENT_FREQ_INDEX.format(self.freqstr, other.freqstr)
-            raise ValueError(msg)
+            raise IncompatibleFrequency(msg)
 
     def _wrap_union_result(self, other, result):
         name = self.name if self.name == other.name else None
@@ -847,14 +851,6 @@ class PeriodIndex(DatelikeOps, DatetimeIndexOpsMixin, Int64Index):
             formatter = lambda dt: u('%s') % dt
         values[imask] = np.array([formatter(dt) for dt in values[imask]])
         return values
-
-    def take(self, indices, axis=0, allow_fill=True, fill_value=None):
-        """
-        Analogous to ndarray.take
-        """
-        indices = com._ensure_platform_int(indices)
-        taken = self.asi8.take(indices, axis=axis)
-        return self._simple_new(taken, self.name, freq=self.freq)
 
     def append(self, other):
         """

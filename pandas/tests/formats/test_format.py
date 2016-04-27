@@ -7,7 +7,8 @@ from __future__ import print_function
 from distutils.version import LooseVersion
 import re
 
-from pandas.compat import range, zip, lrange, StringIO, PY3, lzip, u
+from pandas.compat import (range, zip, lrange, StringIO, PY3,
+                           u, lzip, is_platform_windows)
 import pandas.compat as compat
 import itertools
 from operator import methodcaller
@@ -32,9 +33,10 @@ except ImportError:
 
 from pandas import DataFrame, Series, Index, Timestamp, MultiIndex, date_range, NaT
 
-import pandas.core.format as fmt
+import pandas.formats.format as fmt
 import pandas.util.testing as tm
 import pandas.core.common as com
+import pandas.formats.printing as printing
 from pandas.util.terminal import get_terminal_size
 import pandas as pd
 from pandas.core.config import (set_option, get_option, option_context,
@@ -212,13 +214,13 @@ class TestDataFrameFormatting(tm.TestCase):
 
     def test_repr_obeys_max_seq_limit(self):
         with option_context("display.max_seq_items", 2000):
-            self.assertTrue(len(com.pprint_thing(lrange(1000))) > 1000)
+            self.assertTrue(len(printing.pprint_thing(lrange(1000))) > 1000)
 
         with option_context("display.max_seq_items", 5):
-            self.assertTrue(len(com.pprint_thing(lrange(1000))) < 100)
+            self.assertTrue(len(printing.pprint_thing(lrange(1000))) < 100)
 
     def test_repr_set(self):
-        self.assertEqual(com.pprint_thing(set([1])), '{1}')
+        self.assertEqual(printing.pprint_thing(set([1])), '{1}')
 
     def test_repr_is_valid_construction_code(self):
         # for the case of Index, where the repr is traditional rather then
@@ -320,7 +322,7 @@ class TestDataFrameFormatting(tm.TestCase):
                 df = mkframe((term_width // 7) - 2)
                 self.assertFalse(has_expanded_repr(df))
                 df = mkframe((term_width // 7) + 2)
-                com.pprint_thing(df._repr_fits_horizontal_())
+                printing.pprint_thing(df._repr_fits_horizontal_())
                 self.assertTrue(has_expanded_repr(df))
 
     def test_str_max_colwidth(self):
@@ -727,6 +729,37 @@ class TestDataFrameFormatting(tm.TestCase):
         df = DataFrame(index=arrays, columns=arrays)
         with option_context("display.max_rows", 7, "display.max_columns", 7):
             self.assertTrue(has_doubly_truncated_repr(df))
+
+    def test_truncate_with_different_dtypes(self):
+
+        # 11594, 12045, 12211
+        # when truncated the dtypes of the splits can differ
+
+        # 12211
+        df = DataFrame({'date' : [pd.Timestamp('20130101').tz_localize('UTC')] + [pd.NaT]*5})
+
+        with option_context("display.max_rows", 5):
+            result = str(df)
+            self.assertTrue('2013-01-01 00:00:00+00:00' in result)
+            self.assertTrue('NaT' in result)
+            self.assertTrue('...' in result)
+            self.assertTrue('[6 rows x 1 columns]' in result)
+
+        # 11594
+        import datetime
+        s = Series([datetime.datetime(2012, 1, 1)]*10 + [datetime.datetime(1012,1,2)] + [datetime.datetime(2012, 1, 3)]*10)
+
+        with pd.option_context('display.max_rows', 8):
+            result = str(s)
+            self.assertTrue('object' in result)
+
+        # 12045
+        df = DataFrame({'text': ['some words'] + [None]*9})
+
+        with pd.option_context('display.max_rows', 8, 'display.max_columns', 3):
+            result = str(df)
+            self.assertTrue('None' in result)
+            self.assertFalse('NaN' in result)
 
     def test_to_html_with_col_space(self):
         def check_with_width(df, col_space):
@@ -1524,7 +1557,7 @@ class TestDataFrameFormatting(tm.TestCase):
         fmt.set_option('display.max_rows', 200)
 
     def test_pprint_thing(self):
-        from pandas.core.common import pprint_thing as pp_t
+        from pandas.formats.printing import pprint_thing as pp_t
 
         if PY3:
             raise nose.SkipTest("doesn't work on Python 3")
@@ -3151,8 +3184,23 @@ $1$,$2$
             df = DataFrame({'col1': [1], 'col2': ['a'], 'col3': [10.1]})
             df.to_csv(engine='python')
 
+    def test_period(self):
+        # GH 12615
+        df = pd.DataFrame({'A': pd.period_range('2013-01',
+                                                periods=4, freq='M'),
+                           'B': [pd.Period('2011-01', freq='M'),
+                                 pd.Period('2011-02-01', freq='D'),
+                                 pd.Period('2011-03-01 09:00', freq='H'),
+                                 pd.Period('2011-04', freq='M')],
+                           'C': list('abcd')})
+        exp = ("        A                B  C\n0 2013-01          2011-01  a\n"
+               "1 2013-02       2011-02-01  b\n2 2013-03 2011-03-01 09:00  c\n"
+               "3 2013-04          2011-04  d")
+        self.assertEqual(str(df), exp)
+
 
 class TestSeriesFormatting(tm.TestCase):
+
     _multiprocess_can_split_ = True
 
     def setUp(self):
@@ -3481,6 +3529,27 @@ class TestSeriesFormatting(tm.TestCase):
         result = repr(df.ix[0])
         self.assertTrue('2012-01-01' in result)
 
+    def test_period(self):
+        # GH 12615
+        index = pd.period_range('2013-01', periods=6, freq='M')
+        s = Series(np.arange(6, dtype='int64'), index=index)
+        exp = ("2013-01    0\n2013-02    1\n2013-03    2\n2013-04    3\n"
+               "2013-05    4\n2013-06    5\nFreq: M, dtype: int64")
+        self.assertEqual(str(s), exp)
+
+        s = Series(index)
+        exp = ("0   2013-01\n1   2013-02\n2   2013-03\n3   2013-04\n"
+               "4   2013-05\n5   2013-06\ndtype: object")
+        self.assertEqual(str(s), exp)
+
+        # periods with mixed freq
+        s = Series([pd.Period('2011-01', freq='M'),
+                    pd.Period('2011-02-01', freq='D'),
+                    pd.Period('2011-03-01 09:00', freq='H')])
+        exp = ("0            2011-01\n1         2011-02-01\n"
+               "2   2011-03-01 09:00\ndtype: object")
+        self.assertEqual(str(s), exp)
+
     def test_max_multi_index_display(self):
         # GH 7101
 
@@ -3643,6 +3712,25 @@ class TestSeriesFormatting(tm.TestCase):
         res = s.to_string(header=False, max_rows=2)
         exp = '0    0\n    ..\n9    9'
         self.assertEqual(res, exp)
+
+    def test_sparse_max_row(self):
+        s = pd.Series([1, np.nan, np.nan, 3, np.nan]).to_sparse()
+        result = repr(s)
+        dtype = '' if is_platform_windows() else ', dtype=int32'
+        exp = ("0    1.0\n1    NaN\n2    NaN\n3    3.0\n"
+               "4    NaN\ndtype: float64\nBlockIndex\n"
+               "Block locations: array([0, 3]{0})\n"
+               "Block lengths: array([1, 1]{0})".format(dtype))
+        self.assertEqual(result, exp)
+
+        with option_context("display.max_rows", 3):
+            # GH 10560
+            result = repr(s)
+            exp = ("0    1.0\n    ... \n4    NaN\n"
+                   "dtype: float64\nBlockIndex\n"
+                   "Block locations: array([0, 3]{0})\n"
+                   "Block lengths: array([1, 1]{0})".format(dtype))
+            self.assertEqual(result, exp)
 
 
 class TestEngFormatter(tm.TestCase):

@@ -45,21 +45,19 @@ class IndexingError(Exception):
 class _NDFrameIndexer(object):
     _valid_types = None
     _exception = KeyError
+    axis = None
 
     def __init__(self, obj, name):
         self.obj = obj
         self.ndim = obj.ndim
         self.name = name
-        self.axis = None
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, axis=None):
         # we need to return a copy of ourselves
-        self = self.__class__(self.obj, self.name)
+        new_self = self.__class__(self.obj, self.name)
 
-        # set the passed in values
-        for k, v in compat.iteritems(kwargs):
-            setattr(self, k, v)
-        return self
+        new_self.axis = axis
+        return new_self
 
     def __iter__(self):
         raise NotImplementedError('ix is not iterable')
@@ -1392,8 +1390,33 @@ class _LocIndexer(_LocationIndexer):
 
         return True
 
+    def _get_partial_string_timestamp_match_key(self, key, labels):
+        """Translate any partial string timestamp matches in key, returning the
+        new key (GH 10331)"""
+        if isinstance(labels, MultiIndex):
+            if isinstance(key, compat.string_types) and \
+                    labels.levels[0].is_all_dates:
+                # Convert key '2016-01-01' to
+                # ('2016-01-01'[, slice(None, None, None)]+)
+                key = tuple([key] + [slice(None)] * (len(labels.levels) - 1))
+
+            if isinstance(key, tuple):
+                # Convert (..., '2016-01-01', ...) in tuple to
+                # (..., slice('2016-01-01', '2016-01-01', None), ...)
+                new_key = []
+                for i, component in enumerate(key):
+                    if isinstance(component, compat.string_types) and \
+                            labels.levels[i].is_all_dates:
+                        new_key.append(slice(component, component, None))
+                    else:
+                        new_key.append(component)
+                key = tuple(new_key)
+
+        return key
+
     def _getitem_axis(self, key, axis=0):
         labels = self.obj._get_axis(axis)
+        key = self._get_partial_string_timestamp_match_key(key, labels)
 
         if isinstance(key, slice):
             self._has_valid_type(key, axis)
@@ -1718,11 +1741,12 @@ def convert_to_index_sliceable(obj, key):
         if key in obj._data.items:
             return None
 
-        # we need a timelike key here
+        # We might have a datetimelike string that we can translate to a
+        # slice here via partial string indexing
         if idx.is_all_dates:
             try:
                 return idx._get_string_slice(key)
-            except:
+            except (KeyError, ValueError, NotImplementedError):
                 return None
 
     return None

@@ -11,6 +11,7 @@ import numpy as np
 import pandas.computation.expressions as expressions
 import pandas.core.common as com
 import pandas.core.ops as ops
+import pandas.core.missing as missing
 from pandas import compat
 from pandas import lib
 from pandas.compat import (map, zip, range, u, OrderedDict, OrderedDefaultdict)
@@ -21,6 +22,7 @@ from pandas.core.frame import DataFrame
 from pandas.core.generic import NDFrame, _shared_docs
 from pandas.core.index import (Index, MultiIndex, _ensure_index,
                                _get_combined_index)
+from pandas.formats.printing import pprint_thing
 from pandas.core.indexing import maybe_droplevels
 from pandas.core.internals import (BlockManager,
                                    create_block_manager_from_arrays,
@@ -344,8 +346,8 @@ class Panel(NDFrame):
             v = getattr(self, a)
             if len(v) > 0:
                 return u('%s axis: %s to %s') % (a.capitalize(),
-                                                 com.pprint_thing(v[0]),
-                                                 com.pprint_thing(v[-1]))
+                                                 pprint_thing(v[0]),
+                                                 pprint_thing(v[-1]))
             else:
                 return u('%s axis: None') % a.capitalize()
 
@@ -1505,7 +1507,7 @@ Returns
                 # handles discrepancy between numpy and numexpr on division/mod
                 # by 0 though, given that these are generally (always?)
                 # non-scalars, I'm not sure whether it's worth it at the moment
-                result = com._fill_zeros(result, x, y, name, fill_zeros)
+                result = missing.fill_zeros(result, x, y, name, fill_zeros)
                 return result
 
             if name in _op_descriptions:

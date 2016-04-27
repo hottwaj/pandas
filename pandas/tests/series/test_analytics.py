@@ -11,13 +11,12 @@ from numpy import nan
 import numpy as np
 import pandas as pd
 
-from pandas import (Index, Series, DataFrame, isnull, notnull, bdate_range,
-                    date_range, _np_version_under1p9)
+from pandas import (Series, DataFrame, isnull, notnull, bdate_range,
+                    date_range)
 from pandas.core.index import MultiIndex
 from pandas.tseries.index import Timestamp
 from pandas.tseries.tdi import Timedelta
 import pandas.core.config as cf
-import pandas.lib as lib
 
 import pandas.core.nanops as nanops
 
@@ -511,6 +510,17 @@ class TestSeriesAnalytics(TestData, tm.TestCase):
         assert_series_equal(result, expected)
         self.assertEqual(result.name, self.ts.name)
 
+    def test_numpy_round(self):
+        # See gh-12600
+        s = Series([1.53, 1.36, 0.06])
+        out = np.round(s, decimals=0)
+        expected = Series([2., 1., 0.])
+        assert_series_equal(out, expected)
+
+        msg = "Inplace rounding is not supported"
+        with tm.assertRaisesRegexp(ValueError, msg):
+            np.round(s, decimals=0, out=s)
+
     def test_built_in_round(self):
         if not compat.PY3:
             raise nose.SkipTest(
@@ -530,100 +540,6 @@ class TestSeriesAnalytics(TestData, tm.TestCase):
         s = Series([1., 1., 1.], index=lrange(3))
         result = s.prod()
         self.assertNotIsInstance(result, Series)
-
-    def test_quantile(self):
-        from numpy import percentile
-
-        q = self.ts.quantile(0.1)
-        self.assertEqual(q, percentile(self.ts.valid(), 10))
-
-        q = self.ts.quantile(0.9)
-        self.assertEqual(q, percentile(self.ts.valid(), 90))
-
-        # object dtype
-        q = Series(self.ts, dtype=object).quantile(0.9)
-        self.assertEqual(q, percentile(self.ts.valid(), 90))
-
-        # datetime64[ns] dtype
-        dts = self.ts.index.to_series()
-        q = dts.quantile(.2)
-        self.assertEqual(q, Timestamp('2000-01-10 19:12:00'))
-
-        # timedelta64[ns] dtype
-        tds = dts.diff()
-        q = tds.quantile(.25)
-        self.assertEqual(q, pd.to_timedelta('24:00:00'))
-
-        # GH7661
-        result = Series([np.timedelta64('NaT')]).sum()
-        self.assertTrue(result is pd.NaT)
-
-        msg = 'percentiles should all be in the interval \\[0, 1\\]'
-        for invalid in [-1, 2, [0.5, -1], [0.5, 2]]:
-            with tm.assertRaisesRegexp(ValueError, msg):
-                self.ts.quantile(invalid)
-
-    def test_quantile_multi(self):
-        from numpy import percentile
-
-        qs = [.1, .9]
-        result = self.ts.quantile(qs)
-        expected = pd.Series([percentile(self.ts.valid(), 10),
-                              percentile(self.ts.valid(), 90)],
-                             index=qs, name=self.ts.name)
-        assert_series_equal(result, expected)
-
-        dts = self.ts.index.to_series()
-        dts.name = 'xxx'
-        result = dts.quantile((.2, .2))
-        expected = Series([Timestamp('2000-01-10 19:12:00'),
-                           Timestamp('2000-01-10 19:12:00')],
-                          index=[.2, .2], name='xxx')
-        assert_series_equal(result, expected)
-
-        result = self.ts.quantile([])
-        expected = pd.Series([], name=self.ts.name, index=Index(
-            [], dtype=float))
-        assert_series_equal(result, expected)
-
-    def test_quantile_interpolation(self):
-        # GH #10174
-        if _np_version_under1p9:
-            raise nose.SkipTest("Numpy version is under 1.9")
-
-        from numpy import percentile
-
-        # interpolation = linear (default case)
-        q = self.ts.quantile(0.1, interpolation='linear')
-        self.assertEqual(q, percentile(self.ts.valid(), 10))
-        q1 = self.ts.quantile(0.1)
-        self.assertEqual(q1, percentile(self.ts.valid(), 10))
-
-        # test with and without interpolation keyword
-        self.assertEqual(q, q1)
-
-    def test_quantile_interpolation_np_lt_1p9(self):
-        # GH #10174
-        if not _np_version_under1p9:
-            raise nose.SkipTest("Numpy version is greater than 1.9")
-
-        from numpy import percentile
-
-        # interpolation = linear (default case)
-        q = self.ts.quantile(0.1, interpolation='linear')
-        self.assertEqual(q, percentile(self.ts.valid(), 10))
-        q1 = self.ts.quantile(0.1)
-        self.assertEqual(q1, percentile(self.ts.valid(), 10))
-
-        # interpolation other than linear
-        expErrMsg = "Interpolation methods other than "
-        with tm.assertRaisesRegexp(ValueError, expErrMsg):
-            self.ts.quantile(0.9, interpolation='nearest')
-
-        # object dtype
-        with tm.assertRaisesRegexp(ValueError, expErrMsg):
-            q = Series(self.ts, dtype=object).quantile(0.7,
-                                                       interpolation='higher')
 
     def test_all_any(self):
         ts = tm.makeTimeSeries()
@@ -1356,11 +1272,6 @@ class TestSeriesAnalytics(TestData, tm.TestCase):
         with self.assertRaises(NotImplementedError):
             s.ptp(numeric_only=True)
 
-    def test_datetime_timedelta_quantiles(self):
-        # covers #9694
-        self.assertTrue(pd.isnull(Series([], dtype='M8[ns]').quantile(.5)))
-        self.assertTrue(pd.isnull(Series([], dtype='m8[ns]').quantile(.5)))
-
     def test_empty_timeseries_redections_return_nat(self):
         # covers #11245
         for dtype in ('m8[ns]', 'm8[ns]', 'M8[ns]', 'M8[ns, UTC]'):
@@ -1370,214 +1281,6 @@ class TestSeriesAnalytics(TestData, tm.TestCase):
     def test_unique_data_ownership(self):
         # it works! #1807
         Series(Series(["a", "c", "b"]).unique()).sort_values()
-
-    def test_replace(self):
-        N = 100
-        ser = Series(np.random.randn(N))
-        ser[0:4] = np.nan
-        ser[6:10] = 0
-
-        # replace list with a single value
-        ser.replace([np.nan], -1, inplace=True)
-
-        exp = ser.fillna(-1)
-        assert_series_equal(ser, exp)
-
-        rs = ser.replace(0., np.nan)
-        ser[ser == 0.] = np.nan
-        assert_series_equal(rs, ser)
-
-        ser = Series(np.fabs(np.random.randn(N)), tm.makeDateIndex(N),
-                     dtype=object)
-        ser[:5] = np.nan
-        ser[6:10] = 'foo'
-        ser[20:30] = 'bar'
-
-        # replace list with a single value
-        rs = ser.replace([np.nan, 'foo', 'bar'], -1)
-
-        self.assertTrue((rs[:5] == -1).all())
-        self.assertTrue((rs[6:10] == -1).all())
-        self.assertTrue((rs[20:30] == -1).all())
-        self.assertTrue((isnull(ser[:5])).all())
-
-        # replace with different values
-        rs = ser.replace({np.nan: -1, 'foo': -2, 'bar': -3})
-
-        self.assertTrue((rs[:5] == -1).all())
-        self.assertTrue((rs[6:10] == -2).all())
-        self.assertTrue((rs[20:30] == -3).all())
-        self.assertTrue((isnull(ser[:5])).all())
-
-        # replace with different values with 2 lists
-        rs2 = ser.replace([np.nan, 'foo', 'bar'], [-1, -2, -3])
-        assert_series_equal(rs, rs2)
-
-        # replace inplace
-        ser.replace([np.nan, 'foo', 'bar'], -1, inplace=True)
-
-        self.assertTrue((ser[:5] == -1).all())
-        self.assertTrue((ser[6:10] == -1).all())
-        self.assertTrue((ser[20:30] == -1).all())
-
-        ser = Series([np.nan, 0, np.inf])
-        assert_series_equal(ser.replace(np.nan, 0), ser.fillna(0))
-
-        ser = Series([np.nan, 0, 'foo', 'bar', np.inf, None, lib.NaT])
-        assert_series_equal(ser.replace(np.nan, 0), ser.fillna(0))
-        filled = ser.copy()
-        filled[4] = 0
-        assert_series_equal(ser.replace(np.inf, 0), filled)
-
-        ser = Series(self.ts.index)
-        assert_series_equal(ser.replace(np.nan, 0), ser.fillna(0))
-
-        # malformed
-        self.assertRaises(ValueError, ser.replace, [1, 2, 3], [np.nan, 0])
-
-        # make sure that we aren't just masking a TypeError because bools don't
-        # implement indexing
-        with tm.assertRaisesRegexp(TypeError, 'Cannot compare types .+'):
-            ser.replace([1, 2], [np.nan, 0])
-
-        ser = Series([0, 1, 2, 3, 4])
-        result = ser.replace([0, 1, 2, 3, 4], [4, 3, 2, 1, 0])
-        assert_series_equal(result, Series([4, 3, 2, 1, 0]))
-
-        # API change from 0.12?
-        # GH 5319
-        ser = Series([0, np.nan, 2, 3, 4])
-        expected = ser.ffill()
-        result = ser.replace([np.nan])
-        assert_series_equal(result, expected)
-
-        ser = Series([0, np.nan, 2, 3, 4])
-        expected = ser.ffill()
-        result = ser.replace(np.nan)
-        assert_series_equal(result, expected)
-        # GH 5797
-        ser = Series(date_range('20130101', periods=5))
-        expected = ser.copy()
-        expected.loc[2] = Timestamp('20120101')
-        result = ser.replace({Timestamp('20130103'): Timestamp('20120101')})
-        assert_series_equal(result, expected)
-        result = ser.replace(Timestamp('20130103'), Timestamp('20120101'))
-        assert_series_equal(result, expected)
-
-    def test_replace_with_single_list(self):
-        ser = Series([0, 1, 2, 3, 4])
-        result = ser.replace([1, 2, 3])
-        assert_series_equal(result, Series([0, 0, 0, 0, 4]))
-
-        s = ser.copy()
-        s.replace([1, 2, 3], inplace=True)
-        assert_series_equal(s, Series([0, 0, 0, 0, 4]))
-
-        # make sure things don't get corrupted when fillna call fails
-        s = ser.copy()
-        with tm.assertRaises(ValueError):
-            s.replace([1, 2, 3], inplace=True, method='crash_cymbal')
-        assert_series_equal(s, ser)
-
-    def test_replace_mixed_types(self):
-        s = Series(np.arange(5), dtype='int64')
-
-        def check_replace(to_rep, val, expected):
-            sc = s.copy()
-            r = s.replace(to_rep, val)
-            sc.replace(to_rep, val, inplace=True)
-            assert_series_equal(expected, r)
-            assert_series_equal(expected, sc)
-
-        # should NOT upcast to float
-        e = Series([0, 1, 2, 3, 4])
-        tr, v = [3], [3.0]
-        check_replace(tr, v, e)
-
-        # MUST upcast to float
-        e = Series([0, 1, 2, 3.5, 4])
-        tr, v = [3], [3.5]
-        check_replace(tr, v, e)
-
-        # casts to object
-        e = Series([0, 1, 2, 3.5, 'a'])
-        tr, v = [3, 4], [3.5, 'a']
-        check_replace(tr, v, e)
-
-        # again casts to object
-        e = Series([0, 1, 2, 3.5, Timestamp('20130101')])
-        tr, v = [3, 4], [3.5, Timestamp('20130101')]
-        check_replace(tr, v, e)
-
-        # casts to float
-        e = Series([0, 1, 2, 3.5, 1])
-        tr, v = [3, 4], [3.5, True]
-        check_replace(tr, v, e)
-
-        # test an object with dates + floats + integers + strings
-        dr = date_range('1/1/2001', '1/10/2001',
-                        freq='D').to_series().reset_index(drop=True)
-        result = dr.astype(object).replace(
-            [dr[0], dr[1], dr[2]], [1.0, 2, 'a'])
-        expected = Series([1.0, 2, 'a'] + dr[3:].tolist(), dtype=object)
-        assert_series_equal(result, expected)
-
-    def test_replace_bool_with_string_no_op(self):
-        s = Series([True, False, True])
-        result = s.replace('fun', 'in-the-sun')
-        tm.assert_series_equal(s, result)
-
-    def test_replace_bool_with_string(self):
-        # nonexistent elements
-        s = Series([True, False, True])
-        result = s.replace(True, '2u')
-        expected = Series(['2u', False, '2u'])
-        tm.assert_series_equal(expected, result)
-
-    def test_replace_bool_with_bool(self):
-        s = Series([True, False, True])
-        result = s.replace(True, False)
-        expected = Series([False] * len(s))
-        tm.assert_series_equal(expected, result)
-
-    def test_replace_with_dict_with_bool_keys(self):
-        s = Series([True, False, True])
-        with tm.assertRaisesRegexp(TypeError, 'Cannot compare types .+'):
-            s.replace({'asdf': 'asdb', True: 'yes'})
-
-    def test_replace2(self):
-        N = 100
-        ser = Series(np.fabs(np.random.randn(N)), tm.makeDateIndex(N),
-                     dtype=object)
-        ser[:5] = np.nan
-        ser[6:10] = 'foo'
-        ser[20:30] = 'bar'
-
-        # replace list with a single value
-        rs = ser.replace([np.nan, 'foo', 'bar'], -1)
-
-        self.assertTrue((rs[:5] == -1).all())
-        self.assertTrue((rs[6:10] == -1).all())
-        self.assertTrue((rs[20:30] == -1).all())
-        self.assertTrue((isnull(ser[:5])).all())
-
-        # replace with different values
-        rs = ser.replace({np.nan: -1, 'foo': -2, 'bar': -3})
-
-        self.assertTrue((rs[:5] == -1).all())
-        self.assertTrue((rs[6:10] == -2).all())
-        self.assertTrue((rs[20:30] == -3).all())
-        self.assertTrue((isnull(ser[:5])).all())
-
-        # replace with different values with 2 lists
-        rs2 = ser.replace([np.nan, 'foo', 'bar'], [-1, -2, -3])
-        assert_series_equal(rs, rs2)
-
-        # replace inplace
-        ser.replace([np.nan, 'foo', 'bar'], -1, inplace=True)
-        self.assertTrue((ser[:5] == -1).all())
-        self.assertTrue((ser[6:10] == -1).all())
-        self.assertTrue((ser[20:30] == -1).all())
 
     def test_repeat(self):
         s = Series(np.random.randn(3), index=['a', 'b', 'c'])
@@ -1864,164 +1567,24 @@ class TestSeriesAnalytics(TestData, tm.TestCase):
         res = s.sortlevel(['A', 'B'], sort_remaining=False)
         assert_series_equal(s, res)
 
-    def test_map(self):
-        index, data = tm.getMixedTypeDict()
+    def test_apply_categorical(self):
+        values = pd.Categorical(list('ABBABCD'), categories=list('DCBA'),
+                                ordered=True)
+        s = pd.Series(values, name='XX', index=list('abcdefg'))
+        result = s.apply(lambda x: x.lower())
 
-        source = Series(data['B'], index=data['C'])
-        target = Series(data['C'][:4], index=data['D'][:4])
+        # should be categorical dtype when the number of categories are
+        # the same
+        values = pd.Categorical(list('abbabcd'), categories=list('dcba'),
+                                ordered=True)
+        exp = pd.Series(values, name='XX', index=list('abcdefg'))
+        tm.assert_series_equal(result, exp)
+        tm.assert_categorical_equal(result.values, exp.values)
 
-        merged = target.map(source)
-
-        for k, v in compat.iteritems(merged):
-            self.assertEqual(v, source[target[k]])
-
-        # input could be a dict
-        merged = target.map(source.to_dict())
-
-        for k, v in compat.iteritems(merged):
-            self.assertEqual(v, source[target[k]])
-
-        # function
-        result = self.ts.map(lambda x: x * 2)
-        self.assert_numpy_array_equal(result, self.ts * 2)
-
-        # GH 10324
-        a = Series([1, 2, 3, 4])
-        b = Series(["even", "odd", "even", "odd"], dtype="category")
-        c = Series(["even", "odd", "even", "odd"])
-
-        exp = Series(["odd", "even", "odd", np.nan], dtype="category")
-        self.assert_series_equal(a.map(b), exp)
-        exp = Series(["odd", "even", "odd", np.nan])
-        self.assert_series_equal(a.map(c), exp)
-
-        a = Series(['a', 'b', 'c', 'd'])
-        b = Series([1, 2, 3, 4],
-                   index=pd.CategoricalIndex(['b', 'c', 'd', 'e']))
-        c = Series([1, 2, 3, 4], index=Index(['b', 'c', 'd', 'e']))
-
-        exp = Series([np.nan, 1, 2, 3])
-        self.assert_series_equal(a.map(b), exp)
-        exp = Series([np.nan, 1, 2, 3])
-        self.assert_series_equal(a.map(c), exp)
-
-        a = Series(['a', 'b', 'c', 'd'])
-        b = Series(['B', 'C', 'D', 'E'], dtype='category',
-                   index=pd.CategoricalIndex(['b', 'c', 'd', 'e']))
-        c = Series(['B', 'C', 'D', 'E'], index=Index(['b', 'c', 'd', 'e']))
-
-        exp = Series([np.nan, 'B', 'C', 'D'], dtype='category')
-        self.assert_series_equal(a.map(b), exp)
-        exp = Series([np.nan, 'B', 'C', 'D'])
-        self.assert_series_equal(a.map(c), exp)
-
-    def test_map_compat(self):
-        # related GH 8024
-        s = Series([True, True, False], index=[1, 2, 3])
-        result = s.map({True: 'foo', False: 'bar'})
-        expected = Series(['foo', 'foo', 'bar'], index=[1, 2, 3])
-        assert_series_equal(result, expected)
-
-    def test_map_int(self):
-        left = Series({'a': 1., 'b': 2., 'c': 3., 'd': 4})
-        right = Series({1: 11, 2: 22, 3: 33})
-
-        self.assertEqual(left.dtype, np.float_)
-        self.assertTrue(issubclass(right.dtype.type, np.integer))
-
-        merged = left.map(right)
-        self.assertEqual(merged.dtype, np.float_)
-        self.assertTrue(isnull(merged['d']))
-        self.assertTrue(not isnull(merged['c']))
-
-    def test_map_type_inference(self):
-        s = Series(lrange(3))
-        s2 = s.map(lambda x: np.where(x == 0, 0, 1))
-        self.assertTrue(issubclass(s2.dtype.type, np.integer))
-
-    def test_map_decimal(self):
-        from decimal import Decimal
-
-        result = self.series.map(lambda x: Decimal(str(x)))
-        self.assertEqual(result.dtype, np.object_)
-        tm.assertIsInstance(result[0], Decimal)
-
-    def test_map_na_exclusion(self):
-        s = Series([1.5, np.nan, 3, np.nan, 5])
-
-        result = s.map(lambda x: x * 2, na_action='ignore')
-        exp = s * 2
-        assert_series_equal(result, exp)
-
-    def test_map_dict_with_tuple_keys(self):
-        '''
-        Due to new MultiIndex-ing behaviour in v0.14.0,
-        dicts with tuple keys passed to map were being
-        converted to a multi-index, preventing tuple values
-        from being mapped properly.
-        '''
-        df = pd.DataFrame({'a': [(1, ), (2, ), (3, 4), (5, 6)]})
-        label_mappings = {(1, ): 'A', (2, ): 'B', (3, 4): 'A', (5, 6): 'B'}
-        df['labels'] = df['a'].map(label_mappings)
-        df['expected_labels'] = pd.Series(['A', 'B', 'A', 'B'], index=df.index)
-        # All labels should be filled now
-        tm.assert_series_equal(df['labels'], df['expected_labels'],
-                               check_names=False)
-
-    def test_apply(self):
-        assert_series_equal(self.ts.apply(np.sqrt), np.sqrt(self.ts))
-
-        # elementwise-apply
-        import math
-        assert_series_equal(self.ts.apply(math.exp), np.exp(self.ts))
-
-        # how to handle Series result, #2316
-        result = self.ts.apply(lambda x: Series(
-            [x, x ** 2], index=['x', 'x^2']))
-        expected = DataFrame({'x': self.ts, 'x^2': self.ts ** 2})
-        tm.assert_frame_equal(result, expected)
-
-        # empty series
-        s = Series(dtype=object, name='foo', index=pd.Index([], name='bar'))
-        rs = s.apply(lambda x: x)
-        tm.assert_series_equal(s, rs)
-        # check all metadata (GH 9322)
-        self.assertIsNot(s, rs)
-        self.assertIs(s.index, rs.index)
-        self.assertEqual(s.dtype, rs.dtype)
-        self.assertEqual(s.name, rs.name)
-
-        # index but no data
-        s = Series(index=[1, 2, 3])
-        rs = s.apply(lambda x: x)
-        tm.assert_series_equal(s, rs)
-
-    def test_apply_same_length_inference_bug(self):
-        s = Series([1, 2])
-        f = lambda x: (x, x + 1)
-
-        result = s.apply(f)
-        expected = s.map(f)
-        assert_series_equal(result, expected)
-
-        s = Series([1, 2, 3])
-        result = s.apply(f)
-        expected = s.map(f)
-        assert_series_equal(result, expected)
-
-    def test_apply_dont_convert_dtype(self):
-        s = Series(np.random.randn(10))
-
-        f = lambda x: x if x > 0 else np.nan
-        result = s.apply(f, convert_dtype=False)
-        self.assertEqual(result.dtype, object)
-
-    def test_apply_args(self):
-        s = Series(['foo,bar'])
-
-        result = s.apply(str.split, args=(',', ))
-        self.assertEqual(result[0], ['foo', 'bar'])
-        tm.assertIsInstance(result[0], list)
+        result = s.apply(lambda x: 'A')
+        exp = pd.Series(['A'] * 7, name='XX', index=list('abcdefg'))
+        tm.assert_series_equal(result, exp)
+        self.assertEqual(result.dtype, np.object)
 
     def test_shift_int(self):
         ts = self.ts.astype(int)

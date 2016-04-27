@@ -7,8 +7,10 @@ import numpy as np
 from pandas.core import common as com
 import pandas.core.nanops as nanops
 import pandas.lib as lib
-from pandas.util.decorators import Appender, cache_readonly, deprecate_kwarg
+from pandas.util.decorators import (Appender, cache_readonly,
+                                    deprecate_kwarg, Substitution)
 from pandas.core.common import AbstractMethodError
+from pandas.formats.printing import pprint_thing
 
 _shared_docs = dict()
 _indexops_doc_kwargs = dict(klass='IndexOpsMixin', inplace='',
@@ -611,6 +613,19 @@ pandas.DataFrame.%(name)s
 
         return concat(results, keys=keys, axis=1)
 
+    def _shallow_copy(self, obj=None, obj_type=None, **kwargs):
+        """ return a new object with the replacement attributes """
+        if obj is None:
+            obj = self._selected_obj.copy()
+        if obj_type is None:
+            obj_type = self._constructor
+        if isinstance(obj, obj_type):
+            obj = obj.obj
+        for attr in self._attributes:
+            if attr not in kwargs:
+                kwargs[attr] = getattr(self, attr)
+        return obj_type(obj, **kwargs)
+
     def _is_cython_func(self, arg):
         """ if we define an internal function for this argument, return it """
         return self._cython_table.get(arg)
@@ -621,6 +636,53 @@ pandas.DataFrame.%(name)s
         otherwise return the arg
         """
         return self._builtin_table.get(arg, arg)
+
+
+class GroupByMixin(object):
+    """ provide the groupby facilities to the mixed object """
+
+    @staticmethod
+    def _dispatch(name, *args, **kwargs):
+        """ dispatch to apply """
+        def outer(self, *args, **kwargs):
+            def f(x):
+                x = self._shallow_copy(x, groupby=self._groupby)
+                return getattr(x, name)(*args, **kwargs)
+            return self._groupby.apply(f)
+        outer.__name__ = name
+        return outer
+
+    def _gotitem(self, key, ndim, subset=None):
+        """
+        sub-classes to define
+        return a sliced object
+
+        Parameters
+        ----------
+        key : string / list of selections
+        ndim : 1,2
+            requested ndim of result
+        subset : object, default None
+            subset to act on
+        """
+
+        # create a new object to prevent aliasing
+        if subset is None:
+            subset = self.obj
+
+        # we need to make a shallow copy of ourselves
+        # with the same groupby
+        kwargs = dict([(attr, getattr(self, attr))
+                       for attr in self._attributes])
+        self = self.__class__(subset,
+                              groupby=self._groupby[key],
+                              parent=self,
+                              **kwargs)
+        self._reset_cache()
+        if subset.ndim == 2:
+            if lib.isscalar(key) and key in subset or com.is_list_like(key):
+                self._selection = key
+        return self
 
 
 class FrozenList(PandasObject, list):
@@ -679,7 +741,6 @@ class FrozenList(PandasObject, list):
                         self.__class__.__name__)
 
     def __unicode__(self):
-        from pandas.core.common import pprint_thing
         return pprint_thing(self, quote_strings=True,
                             escape_chars=('\t', '\r', '\n'))
 
@@ -723,8 +784,8 @@ class FrozenNDArray(PandasObject, np.ndarray):
         Invoked by unicode(df) in py2 only. Yields a Unicode String in both
         py2/py3.
         """
-        prepr = com.pprint_thing(self, escape_chars=('\t', '\r', '\n'),
-                                 quote_strings=True)
+        prepr = pprint_thing(self, escape_chars=('\t', '\r', '\n'),
+                             quote_strings=True)
         return "%s(%s, dtype='%s')" % (type(self).__name__, prepr, self.dtype)
 
 
@@ -990,13 +1051,73 @@ class IndexOpsMixin(object):
         from pandas.core.algorithms import factorize
         return factorize(self, sort=sort, na_sentinel=na_sentinel)
 
-    def searchsorted(self, key, side='left'):
-        """ np.ndarray searchsorted compat """
+    _shared_docs['searchsorted'] = (
+        """Find indices where elements should be inserted to maintain order.
 
-        # FIXME in GH7447
-        # needs coercion on the key (DatetimeIndex does alreay)
-        # needs tests/doc-string
-        return self.values.searchsorted(key, side=side)
+        Find the indices into a sorted %(klass)s `self` such that, if the
+        corresponding elements in `v` were inserted before the indices, the
+        order of `self` would be preserved.
+
+        Parameters
+        ----------
+        %(value)s : array_like
+            Values to insert into `self`.
+        side : {'left', 'right'}, optional
+            If 'left', the index of the first suitable location found is given.
+            If 'right', return the last such index.  If there is no suitable
+            index, return either 0 or N (where N is the length of `self`).
+        sorter : 1-D array_like, optional
+            Optional array of integer indices that sort `self` into ascending
+            order. They are typically the result of ``np.argsort``.
+
+        Returns
+        -------
+        indices : array of ints
+            Array of insertion points with the same shape as `v`.
+
+        See Also
+        --------
+        numpy.searchsorted
+
+        Notes
+        -----
+        Binary search is used to find the required insertion points.
+
+        Examples
+        --------
+        >>> x = pd.Series([1, 2, 3])
+        >>> x
+        0    1
+        1    2
+        2    3
+        dtype: int64
+        >>> x.searchsorted(4)
+        array([3])
+        >>> x.searchsorted([0, 4])
+        array([0, 3])
+        >>> x.searchsorted([1, 3], side='left')
+        array([0, 2])
+        >>> x.searchsorted([1, 3], side='right')
+        array([1, 3])
+        >>>
+        >>> x = pd.Categorical(['apple', 'bread', 'bread', 'cheese', 'milk' ])
+        [apple, bread, bread, cheese, milk]
+        Categories (4, object): [apple < bread < cheese < milk]
+        >>> x.searchsorted('bread')
+        array([1])     # Note: an array, not a scalar
+        >>> x.searchsorted(['bread'])
+        array([1])
+        >>> x.searchsorted(['bread', 'eggs'])
+        array([1, 4])
+        >>> x.searchsorted(['bread', 'eggs'], side='right')
+        array([3, 4])    # eggs before milk
+        """)
+
+    @Substitution(klass='IndexOpsMixin', value='key')
+    @Appender(_shared_docs['searchsorted'])
+    def searchsorted(self, key, side='left', sorter=None):
+        # needs coercion on the key (DatetimeIndex does already)
+        return self.values.searchsorted(key, side=side, sorter=sorter)
 
     _shared_docs['drop_duplicates'] = (
         """Return %(klass)s with duplicate values removed
