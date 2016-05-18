@@ -2,8 +2,6 @@
 from __future__ import print_function
 import nose
 
-from numpy.testing.decorators import slow
-
 from datetime import datetime
 from numpy import nan
 
@@ -1875,7 +1873,6 @@ class TestGroupBy(tm.TestCase):
             check_nunique(frame, ['jim'])
             check_nunique(frame, ['jim', 'joe'])
 
-    @slow
     def test_series_groupby_value_counts(self):
         from itertools import product
 
@@ -1910,7 +1907,7 @@ class TestGroupBy(tm.TestCase):
 
         days = date_range('2015-08-24', periods=10)
 
-        for n, m in product((100, 10000), (5, 20)):
+        for n, m in product((100, 1000), (5, 20)):
             frame = DataFrame({
                 '1st': np.random.choice(
                     list('abcd'), n),
@@ -2679,7 +2676,7 @@ class TestGroupBy(tm.TestCase):
         trans_expected = ts_grouped.transform(g)
 
         assert_series_equal(apply_result, agg_expected)
-        assert_series_equal(agg_result, agg_expected)
+        assert_series_equal(agg_result, agg_expected, check_names=False)
         assert_series_equal(trans_result, trans_expected)
 
         agg_result = ts_grouped.agg(f, q=80)
@@ -2695,11 +2692,11 @@ class TestGroupBy(tm.TestCase):
         apply_result = df_grouped.apply(DataFrame.quantile, .8)
         expected = df_grouped.quantile(.8)
         assert_frame_equal(apply_result, expected)
-        assert_frame_equal(agg_result, expected)
+        assert_frame_equal(agg_result, expected, check_names=False)
 
         agg_result = df_grouped.agg(f, q=80)
         apply_result = df_grouped.apply(DataFrame.quantile, q=.8)
-        assert_frame_equal(agg_result, expected)
+        assert_frame_equal(agg_result, expected, check_names=False)
         assert_frame_equal(apply_result, expected)
 
     def test_size(self):
@@ -3315,8 +3312,12 @@ class TestGroupBy(tm.TestCase):
         # confirm obj is not filtered
         tm.assert_frame_equal(grouped.grouper.groupings[0].obj, df)
         self.assertEqual(grouped.ngroups, 2)
-        expected = {Timestamp('2013-01-01 00:00:00'): np.array([1, 7]),
-                    Timestamp('2013-02-01 00:00:00'): np.array([3, 5])}
+
+        expected = {
+            Timestamp('2013-01-01 00:00:00'): np.array([1, 7], dtype=np.int64),
+            Timestamp('2013-02-01 00:00:00'): np.array([3, 5], dtype=np.int64)
+        }
+
         for k in grouped.indices:
             self.assert_numpy_array_equal(grouped.indices[k], expected[k])
 
@@ -3412,7 +3413,7 @@ class TestGroupBy(tm.TestCase):
         d['ones'] = [1, 1]
         d['label'] = ['l1', 'l2']
         tmp = d.groupby(['group']).mean()
-        res_values = np.array([[0., 1.], [0., 1.]])
+        res_values = np.array([[0, 1], [0, 1]], dtype=np.int64)
         self.assert_numpy_array_equal(tmp.columns, ['zeros', 'ones'])
         self.assert_numpy_array_equal(tmp.values, res_values)
 
@@ -4506,6 +4507,57 @@ class TestGroupBy(tm.TestCase):
         grouper = pd.tseries.resample.TimeGrouper('D')
         grouped = series.groupby(grouper)
         assert next(iter(grouped), None) is None
+
+    def test_aaa_groupby_with_small_elem(self):
+        # GH 8542
+        # length=2
+        df = pd.DataFrame({'event': ['start', 'start'],
+                           'change': [1234, 5678]},
+                          index=pd.DatetimeIndex(['2014-09-10', '2013-10-10']))
+        grouped = df.groupby([pd.TimeGrouper(freq='M'), 'event'])
+        self.assertEqual(len(grouped.groups), 2)
+        self.assertEqual(grouped.ngroups, 2)
+        self.assertIn((pd.Timestamp('2014-09-30'), 'start'), grouped.groups)
+        self.assertIn((pd.Timestamp('2013-10-31'), 'start'), grouped.groups)
+
+        res = grouped.get_group((pd.Timestamp('2014-09-30'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[0], :])
+        res = grouped.get_group((pd.Timestamp('2013-10-31'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[1], :])
+
+        df = pd.DataFrame({'event': ['start', 'start', 'start'],
+                           'change': [1234, 5678, 9123]},
+                          index=pd.DatetimeIndex(['2014-09-10', '2013-10-10',
+                                                  '2014-09-15']))
+        grouped = df.groupby([pd.TimeGrouper(freq='M'), 'event'])
+        self.assertEqual(len(grouped.groups), 2)
+        self.assertEqual(grouped.ngroups, 2)
+        self.assertIn((pd.Timestamp('2014-09-30'), 'start'), grouped.groups)
+        self.assertIn((pd.Timestamp('2013-10-31'), 'start'), grouped.groups)
+
+        res = grouped.get_group((pd.Timestamp('2014-09-30'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[0, 2], :])
+        res = grouped.get_group((pd.Timestamp('2013-10-31'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[1], :])
+
+        # length=3
+        df = pd.DataFrame({'event': ['start', 'start', 'start'],
+                           'change': [1234, 5678, 9123]},
+                          index=pd.DatetimeIndex(['2014-09-10', '2013-10-10',
+                                                  '2014-08-05']))
+        grouped = df.groupby([pd.TimeGrouper(freq='M'), 'event'])
+        self.assertEqual(len(grouped.groups), 3)
+        self.assertEqual(grouped.ngroups, 3)
+        self.assertIn((pd.Timestamp('2014-09-30'), 'start'), grouped.groups)
+        self.assertIn((pd.Timestamp('2013-10-31'), 'start'), grouped.groups)
+        self.assertIn((pd.Timestamp('2014-08-31'), 'start'), grouped.groups)
+
+        res = grouped.get_group((pd.Timestamp('2014-09-30'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[0], :])
+        res = grouped.get_group((pd.Timestamp('2013-10-31'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[1], :])
+        res = grouped.get_group((pd.Timestamp('2014-08-31'), 'start'))
+        tm.assert_frame_equal(res, df.iloc[[2], :])
 
     def test_groupby_with_timezone_selection(self):
         # GH 11616
@@ -5920,7 +5972,7 @@ class TestGroupBy(tm.TestCase):
                 exc.args += ('operation: %s' % op, )
                 raise
 
-    def test_cython_group_transform_algos(self):
+    def test_aa_cython_group_transform_algos(self):
         # GH 4095
         dtypes = [np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint32,
                   np.uint64, np.float32, np.float64]
@@ -5935,7 +5987,8 @@ class TestGroupBy(tm.TestCase):
                 accum = np.array([[0]], dtype=dtype)
                 labels = np.array([0, 0, 0, 0], dtype=np.int64)
                 pd_op(ans, data, labels, accum)
-                self.assert_numpy_array_equal(np_op(data), ans[:, 0])
+                self.assert_numpy_array_equal(np_op(data), ans[:, 0],
+                                              check_dtype=False)
 
         # with nans
         labels = np.array([0, 0, 0, 0, 0], dtype=np.int64)

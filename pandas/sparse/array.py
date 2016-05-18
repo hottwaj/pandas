@@ -7,15 +7,18 @@ from __future__ import division
 from numpy import nan, ndarray
 import numpy as np
 
+import pandas as pd
 from pandas.core.base import PandasObject
 import pandas.core.common as com
 
 from pandas import compat, lib
 from pandas.compat import range
+from pandas.compat.numpy import function as nv
 
 from pandas._sparse import SparseIndex, BlockIndex, IntIndex
 import pandas._sparse as splib
 import pandas.index as _index
+import pandas.core.algorithms as algos
 import pandas.core.ops as ops
 import pandas.formats.printing as printing
 from pandas.util.decorators import Appender
@@ -87,11 +90,11 @@ def _wrap_result(name, data, sparse_index, fill_value):
 
 
 class SparseArray(PandasObject, np.ndarray):
-    """Data structure for labeled, sparse floating point data
+    """Data structure for labeled, sparse floating point 1-D data
 
     Parameters
     ----------
-    data : {array-like, Series, SparseSeries, dict}
+    data : {array-like (1-D), Series, SparseSeries, dict}
     kind : {'block', 'integer'}
     fill_value : float
         Defaults to NaN (code for missing)
@@ -316,9 +319,15 @@ class SparseArray(PandasObject, np.ndarray):
 
     @Appender(_index_shared_docs['take'] % _sparray_doc_kwargs)
     def take(self, indices, axis=0, allow_fill=True,
-             fill_value=None):
+             fill_value=None, **kwargs):
+        """
+        Sparse-compatible version of ndarray.take
 
-        # Sparse-compatible version of ndarray.take, returns SparseArray
+        Returns
+        -------
+        taken : ndarray
+        """
+        nv.validate_take(tuple(), kwargs)
 
         if axis:
             raise ValueError("axis must be 0, input was {0}".format(axis))
@@ -453,7 +462,7 @@ class SparseArray(PandasObject, np.ndarray):
             return self._simple_new(new_values, self.sp_index,
                                     fill_value=self.fill_value)
 
-    def sum(self, axis=None, dtype=None, out=None):
+    def sum(self, axis=0, *args, **kwargs):
         """
         Sum of non-NA/null values
 
@@ -461,6 +470,7 @@ class SparseArray(PandasObject, np.ndarray):
         -------
         sum : float
         """
+        nv.validate_sum(args, kwargs)
         valid_vals = self._valid_sp_values
         sp_sum = valid_vals.sum()
         if self._null_fill_value:
@@ -469,23 +479,25 @@ class SparseArray(PandasObject, np.ndarray):
             nsparse = self.sp_index.ngaps
             return sp_sum + self.fill_value * nsparse
 
-    def cumsum(self, axis=0, dtype=None, out=None):
+    def cumsum(self, axis=0, *args, **kwargs):
         """
         Cumulative sum of values. Preserves locations of NaN values
-
-        Extra parameters are to preserve ndarray interface.
 
         Returns
         -------
         cumsum : Series
         """
+        nv.validate_cumsum(args, kwargs)
+
+        # TODO: gh-12855 - return a SparseArray here
         if com.notnull(self.fill_value):
             return self.to_dense().cumsum()
+
         # TODO: what if sp_values contains NaN??
         return SparseArray(self.sp_values.cumsum(), sparse_index=self.sp_index,
                            fill_value=self.fill_value)
 
-    def mean(self, axis=None, dtype=None, out=None):
+    def mean(self, axis=0, *args, **kwargs):
         """
         Mean of non-NA/null values
 
@@ -493,6 +505,7 @@ class SparseArray(PandasObject, np.ndarray):
         -------
         mean : float
         """
+        nv.validate_mean(args, kwargs)
         valid_vals = self._valid_sp_values
         sp_sum = valid_vals.sum()
         ct = len(valid_vals)
@@ -502,6 +515,42 @@ class SparseArray(PandasObject, np.ndarray):
         else:
             nsparse = self.sp_index.ngaps
             return (sp_sum + self.fill_value * nsparse) / (ct + nsparse)
+
+    def value_counts(self, dropna=True):
+        """
+        Returns a Series containing counts of unique values.
+
+        Parameters
+        ----------
+        dropna : boolean, default True
+            Don't include counts of NaN, even if NaN is in sp_values.
+
+        Returns
+        -------
+        counts : Series
+        """
+        keys, counts = algos._value_counts_arraylike(self.sp_values,
+                                                     dropna=dropna)
+        fcounts = self.sp_index.ngaps
+        if fcounts > 0:
+            if self._null_fill_value and dropna:
+                pass
+            else:
+                if self._null_fill_value:
+                    mask = pd.isnull(keys)
+                else:
+                    mask = keys == self.fill_value
+
+                if mask.any():
+                    counts[mask] += fcounts
+                else:
+                    keys = np.insert(keys, 0, self.fill_value)
+                    counts = np.insert(counts, 0, fcounts)
+
+        if not isinstance(keys, pd.Index):
+            keys = pd.Index(keys)
+        result = pd.Series(counts, index=keys)
+        return result
 
 
 def _maybe_to_dense(obj):
@@ -563,7 +612,9 @@ def make_sparse(arr, kind='block', fill_value=nan):
     """
 
     arr = _sanitize_values(arr)
-    length = len(arr)
+
+    if arr.ndim > 1:
+        raise TypeError("expected dimension <= 1 data")
 
     if np.isnan(fill_value):
         mask = ~np.isnan(arr)

@@ -44,9 +44,9 @@ from pandas.computation.eval import eval as _eval
 from pandas.compat import (range, map, zip, lrange, lmap, lzip, StringIO, u,
                            OrderedDict, raise_with_traceback)
 from pandas import compat
+from pandas.compat.numpy import function as nv
 from pandas.util.decorators import (deprecate, Appender, Substitution,
                                     deprecate_kwarg)
-from pandas.util.validators import validate_args
 
 from pandas.tseries.period import PeriodIndex
 from pandas.tseries.index import DatetimeIndex
@@ -1062,7 +1062,7 @@ class DataFrame(NDFrame):
                         count += 1
             elif index_names[0] is None:
                 index_names = ['index']
-            names = index_names + lmap(str, self.columns)
+            names = lmap(str, index_names) + lmap(str, self.columns)
         else:
             arrays = [self[c].get_values() for c in self.columns]
             names = lmap(str, self.columns)
@@ -1770,9 +1770,10 @@ class DataFrame(NDFrame):
                             index=['Index']).append(result)
         return result
 
-    def transpose(self):
+    def transpose(self, *args, **kwargs):
         """Transpose index and columns"""
-        return super(DataFrame, self).transpose(1, 0)
+        nv.validate_transpose(args, dict())
+        return super(DataFrame, self).transpose(1, 0, **kwargs)
 
     T = property(transpose)
 
@@ -1970,6 +1971,7 @@ class DataFrame(NDFrame):
         return self.iat[i, j]
 
     def __getitem__(self, key):
+        key = com._apply_if_callable(key, self)
 
         # shortcut if we are an actual column
         is_mi_columns = isinstance(self.columns, MultiIndex)
@@ -2138,6 +2140,9 @@ class DataFrame(NDFrame):
         >>> df.query('a > b')
         >>> df[df.a > df.b]  # same result as the previous expression
         """
+        if not isinstance(expr, compat.string_types):
+            msg = "expr must be a string to be evaluated, {0} given"
+            raise ValueError(msg.format(type(expr)))
         kwargs['level'] = kwargs.pop('level', 0) + 1
         kwargs['target'] = None
         res = self.eval(expr, **kwargs)
@@ -2336,6 +2341,7 @@ class DataFrame(NDFrame):
                                                    name=items, fastpath=True)
 
     def __setitem__(self, key, value):
+        key = com._apply_if_callable(key, self)
 
         # see if we can slice the rows
         indexer = convert_to_index_sliceable(self, key)
@@ -2454,8 +2460,9 @@ class DataFrame(NDFrame):
         kwargs : keyword, value pairs
             keywords are the column names. If the values are
             callable, they are computed on the DataFrame and
-            assigned to the new columns. If the values are
-            not callable, (e.g. a Series, scalar, or array),
+            assigned to the new columns. The callable must not
+            change input DataFrame (though pandas doesn't check it).
+            If the values are not callable, (e.g. a Series, scalar, or array),
             they are simply assigned.
 
         Returns
@@ -2513,11 +2520,7 @@ class DataFrame(NDFrame):
         # do all calculations first...
         results = {}
         for k, v in kwargs.items():
-
-            if callable(v):
-                results[k] = v(data)
-            else:
-                results[k] = v
+            results[k] = com._apply_if_callable(v, data)
 
         # ... and then assign
         for k, v in sorted(results.items()):
@@ -3172,7 +3175,7 @@ class DataFrame(NDFrame):
             return self._constructor(new_data).__finalize__(self)
 
     def sort(self, columns=None, axis=0, ascending=True, inplace=False,
-             kind='quicksort', na_position='last'):
+             kind='quicksort', na_position='last', **kwargs):
         """
         DEPRECATED: use :meth:`DataFrame.sort_values`
 
@@ -3207,6 +3210,7 @@ class DataFrame(NDFrame):
         -------
         sorted : DataFrame
         """
+        nv.validate_sort(tuple(), kwargs)
 
         if columns is None:
             warnings.warn("sort(....) is deprecated, use sort_index(.....)",
@@ -4432,7 +4436,7 @@ class DataFrame(NDFrame):
                      right_index=right_index, sort=sort, suffixes=suffixes,
                      copy=copy, indicator=indicator)
 
-    def round(self, decimals=0, *args):
+    def round(self, decimals=0, *args, **kwargs):
         """
         Round a DataFrame to a variable number of decimal places.
 
@@ -4500,8 +4504,7 @@ class DataFrame(NDFrame):
                 return s.round(decimals)
             return s
 
-        validate_args(args, min_length=0, max_length=1,
-                      msg="Inplace rounding is not supported")
+        nv.validate_round(args, kwargs)
 
         if isinstance(decimals, (dict, Series)):
             if isinstance(decimals, Series):
@@ -4986,31 +4989,27 @@ class DataFrame(NDFrame):
         0.5  2.5  55.0
         """
         self._check_percentile(q)
-        if not com.is_list_like(q):
-            q = [q]
-            squeeze = True
-        else:
-            squeeze = False
 
         data = self._get_numeric_data() if numeric_only else self
         axis = self._get_axis_number(axis)
+        is_transposed = axis == 1
 
-        def _quantile(series):
-            res = series.quantile(q, interpolation=interpolation)
-            return series.name, res
-
-        if axis == 1:
+        if is_transposed:
             data = data.T
 
-        # unable to use DataFrame.apply, becasuse data may be empty
-        result = dict(_quantile(s) for (_, s) in data.iteritems())
-        result = self._constructor(result, columns=data.columns)
-        if squeeze:
-            if result.shape == (1, 1):
-                result = result.T.iloc[:, 0]  # don't want scalar
-            else:
-                result = result.T.squeeze()
-            result.name = None  # For groupby, so it can set an index name
+        result = data._data.quantile(qs=q,
+                                     axis=1,
+                                     interpolation=interpolation,
+                                     transposed=is_transposed)
+
+        if result.ndim == 2:
+            result = self._constructor(result)
+        else:
+            result = self._constructor_sliced(result, name=q)
+
+        if is_transposed:
+            result = result.T
+
         return result
 
     def to_timestamp(self, freq=None, how='start', axis=0, copy=True):

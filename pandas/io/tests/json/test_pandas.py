@@ -139,7 +139,7 @@ class TestPandasContainer(tm.TestCase):
         def _check_orient(df, orient, dtype=None, numpy=False,
                           convert_axes=True, check_dtype=True, raise_ok=None,
                           sort=None, check_index_type=True,
-                          check_column_type=True):
+                          check_column_type=True, check_numpy_dtype=False):
             if sort is not None:
                 df = df.sort_values(sort)
             else:
@@ -181,14 +181,16 @@ class TestPandasContainer(tm.TestCase):
                     unser.index.values.astype('i8') * 1e6)
             if orient == "records":
                 # index is not captured in this orientation
-                assert_almost_equal(df.values, unser.values)
+                assert_almost_equal(df.values, unser.values,
+                                    check_dtype=check_numpy_dtype)
                 self.assertTrue(df.columns.equals(unser.columns))
             elif orient == "values":
                 # index and cols are not captured in this orientation
                 if numpy is True and df.shape == (0, 0):
                     assert unser.shape[0] == 0
                 else:
-                    assert_almost_equal(df.values, unser.values)
+                    assert_almost_equal(df.values, unser.values,
+                                        check_dtype=check_numpy_dtype)
             elif orient == "split":
                 # index and col labels might not be strings
                 unser.index = [str(i) for i in unser.index]
@@ -196,7 +198,8 @@ class TestPandasContainer(tm.TestCase):
 
                 if sort is None:
                     unser = unser.sort_index()
-                assert_almost_equal(df.values, unser.values)
+                assert_almost_equal(df.values, unser.values,
+                                    check_dtype=check_numpy_dtype)
             else:
                 if convert_axes:
                     assert_frame_equal(df, unser, check_dtype=check_dtype,
@@ -614,6 +617,7 @@ class TestPandasContainer(tm.TestCase):
 
         df['foo'] = 1.
         json = df.to_json(date_unit='ns')
+
         result = read_json(json, convert_dates=False)
         expected = df.copy()
         expected['date'] = expected['date'].values.view('i8')
@@ -809,16 +813,47 @@ DataFrame\\.index values are different \\(100\\.0 %\\)
 
     def test_default_handler(self):
         value = object()
-        frame = DataFrame({'a': ['a', value]})
-        expected = frame.applymap(str)
+        frame = DataFrame({'a': [7, value]})
+        expected = DataFrame({'a': [7, str(value)]})
         result = pd.read_json(frame.to_json(default_handler=str))
         assert_frame_equal(expected, result, check_index_type=False)
+
+    def test_default_handler_indirect(self):
+        from pandas.io.json import dumps
+
+        def default(obj):
+            if isinstance(obj, complex):
+                return [('mathjs', 'Complex'),
+                        ('re', obj.real),
+                        ('im', obj.imag)]
+            return str(obj)
+        df_list = [9, DataFrame({'a': [1, 'STR', complex(4, -5)],
+                                 'b': [float('nan'), None, 'N/A']},
+                                columns=['a', 'b'])]
+        expected = ('[9,[[1,null],["STR",null],[[["mathjs","Complex"],'
+                    '["re",4.0],["im",-5.0]],"N\\/A"]]]')
+        self.assertEqual(expected, dumps(df_list, default_handler=default,
+                                         orient="values"))
+
+    def test_default_handler_numpy_unsupported_dtype(self):
+        # GH12554 to_json raises 'Unhandled numpy dtype 15'
+        df = DataFrame({'a': [1, 2.3, complex(4, -5)],
+                        'b': [float('nan'), None, complex(1.2, 0)]},
+                       columns=['a', 'b'])
+        expected = ('[["(1+0j)","(nan+0j)"],'
+                    '["(2.3+0j)","(nan+0j)"],'
+                    '["(4-5j)","(1.2+0j)"]]')
+        self.assertEqual(expected, df.to_json(default_handler=str,
+                                              orient="values"))
 
     def test_default_handler_raises(self):
         def my_handler_raises(obj):
             raise TypeError("raisin")
         self.assertRaises(TypeError,
                           DataFrame({'a': [1, 2, object()]}).to_json,
+                          default_handler=my_handler_raises)
+        self.assertRaises(TypeError,
+                          DataFrame({'a': [1, 2, complex(4, -5)]}).to_json,
                           default_handler=my_handler_raises)
 
     def test_categorical(self):

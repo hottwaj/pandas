@@ -10,6 +10,7 @@ import pandas.index as _index
 from pandas.lib import Timestamp, Timedelta, is_datetime_array
 
 from pandas.compat import range, u
+from pandas.compat.numpy import function as nv
 from pandas import compat
 from pandas.core.base import (PandasObject, FrozenList, FrozenNDArray,
                               IndexOpsMixin)
@@ -452,14 +453,16 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
         """
         return list(self.values)
 
-    def repeat(self, n):
+    def repeat(self, n, *args, **kwargs):
         """
-        return a new Index of the values repeated n times
+        Repeat elements of an Index. Refer to `numpy.ndarray.repeat`
+        for more information about the `n` argument.
 
         See also
         --------
         numpy.ndarray.repeat
         """
+        nv.validate_repeat(args, kwargs)
         return self._shallow_copy(self._values.repeat(n))
 
     def ravel(self, order='C'):
@@ -1354,8 +1357,10 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
         numpy.ndarray.take
         """
 
-    @Appender(_index_shared_docs['take'] % _index_doc_kwargs)
-    def take(self, indices, axis=0, allow_fill=True, fill_value=None):
+    @Appender(_index_shared_docs['take'])
+    def take(self, indices, axis=0, allow_fill=True,
+             fill_value=None, **kwargs):
+        nv.validate_take(tuple(), kwargs)
         indices = com._ensure_platform_int(indices)
         if self._can_hold_na:
             taken = self._assert_take_fillable(self.values, indices,
@@ -1619,7 +1624,12 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
 
     def argsort(self, *args, **kwargs):
         """
-        return an ndarray indexer of the underlying data
+        Returns the indices that would sort the index and its
+        underlying data.
+
+        Returns
+        -------
+        argsorted : numpy array
 
         See also
         --------
@@ -1663,6 +1673,21 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
     def __xor__(self, other):
         return self.symmetric_difference(other)
 
+    def _get_consensus_name(self, other):
+        """
+        Given 2 indexes, give a consensus name meaning
+        we take the not None one, or None if the names differ.
+        Return a new object if we are resetting the name
+        """
+        if self.name != other.name:
+            if self.name is None or other.name is None:
+                name = self.name or other.name
+            else:
+                name = None
+            if self.name != name:
+                return other._shallow_copy(name=name)
+        return self
+
     def union(self, other):
         """
         Form the union of two Index objects and sorts if possible.
@@ -1688,10 +1713,10 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
         other = _ensure_index(other)
 
         if len(other) == 0 or self.equals(other):
-            return self
+            return self._get_consensus_name(other)
 
         if len(self) == 0:
-            return other
+            return other._get_consensus_name(self)
 
         if not com.is_dtype_equal(self.dtype, other.dtype):
             this = self.astype('O')
@@ -1774,7 +1799,7 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
         other = _ensure_index(other)
 
         if self.equals(other):
-            return self
+            return self._get_consensus_name(other)
 
         if not com.is_dtype_equal(self.dtype, other.dtype):
             this = self.astype('O')
@@ -2221,8 +2246,13 @@ class Index(IndexOpsMixin, StringAccessorMixin, PandasObject):
 
         Parameters
         ----------
-        values : set or sequence of values
+        values : set or list-like
             Sought values.
+
+            .. versionadded:: 0.18.1
+
+            Support for values as a set
+
         level : str or int, optional
             Name or position of the index level to use (if the index is a
             MultiIndex).

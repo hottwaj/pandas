@@ -26,7 +26,7 @@ from pandas import (
     DatetimeIndex, Int64Index, to_datetime, bdate_range, Float64Index,
     NaT, timedelta_range, Timedelta, _np_version_under1p8, concat)
 from pandas.compat import range, long, StringIO, lrange, lmap, zip, product
-from pandas.compat.numpy_compat import np_datetime64_compat
+from pandas.compat.numpy import np_datetime64_compat
 from pandas.core.common import PerformanceWarning
 from pandas.tslib import iNaT
 from pandas.util.testing import (
@@ -751,6 +751,16 @@ class TestTimeSeries(tm.TestCase):
         expected = Series([Timestamp('2013-06-09 02:42:28') + timedelta(
             seconds=t) for t in range(20)] + [NaT])
         assert_series_equal(result, expected)
+
+        result = to_datetime([1, 2, 'NaT', pd.NaT, np.nan], unit='D')
+        expected = DatetimeIndex([Timestamp('1970-01-02'),
+                                  Timestamp('1970-01-03')] + ['NaT'] * 3)
+        tm.assert_index_equal(result, expected)
+
+        with self.assertRaises(ValueError):
+            to_datetime([1, 2, 'foo'], unit='D')
+        with self.assertRaises(ValueError):
+            to_datetime([1, 2, 111111111], unit='D')
 
     def test_series_ctor_datetime64(self):
         rng = date_range('1/1/2000 00:00:00', '1/1/2000 1:59:50', freq='10s')
@@ -3755,7 +3765,8 @@ class TestDatetime64(tm.TestCase):
     def test_nanosecond_field(self):
         dti = DatetimeIndex(np.arange(10))
 
-        self.assert_numpy_array_equal(dti.nanosecond, np.arange(10))
+        self.assert_numpy_array_equal(dti.nanosecond,
+                                      np.arange(10, dtype=np.int32))
 
     def test_datetimeindex_diff(self):
         dti1 = DatetimeIndex(freq='Q-JAN', start=datetime(1997, 12, 31),
@@ -4151,6 +4162,7 @@ class TestTimestamp(tm.TestCase):
         self.assertEqual(stamp.nanosecond, 500)
 
     def test_unit(self):
+
         def check(val, unit=None, h=1, s=1, us=0):
             stamp = Timestamp(val, unit=unit)
             self.assertEqual(stamp.year, 2000)
@@ -4216,6 +4228,68 @@ class TestTimestamp(tm.TestCase):
 
         result = Timestamp('NaT')
         self.assertIs(result, NaT)
+
+    def test_unit_errors(self):
+        # GH 11758
+        # test proper behavior with erros
+
+        with self.assertRaises(ValueError):
+            to_datetime([1], unit='D', format='%Y%m%d')
+
+        values = [11111111, 1, 1.0, tslib.iNaT, pd.NaT, np.nan,
+                  'NaT', '']
+        result = to_datetime(values, unit='D', errors='ignore')
+        expected = Index([11111111, Timestamp('1970-01-02'),
+                          Timestamp('1970-01-02'), pd.NaT,
+                          pd.NaT, pd.NaT, pd.NaT, pd.NaT],
+                         dtype=object)
+        tm.assert_index_equal(result, expected)
+
+        result = to_datetime(values, unit='D', errors='coerce')
+        expected = DatetimeIndex(['NaT', '1970-01-02', '1970-01-02',
+                                  'NaT', 'NaT', 'NaT', 'NaT', 'NaT'])
+        tm.assert_index_equal(result, expected)
+
+        with self.assertRaises(tslib.OutOfBoundsDatetime):
+            to_datetime(values, unit='D', errors='raise')
+
+        values = [1420043460000, tslib.iNaT, pd.NaT, np.nan, 'NaT']
+
+        result = to_datetime(values, errors='ignore', unit='s')
+        expected = Index([1420043460000, pd.NaT, pd.NaT,
+                          pd.NaT, pd.NaT], dtype=object)
+        tm.assert_index_equal(result, expected)
+
+        result = to_datetime(values, errors='coerce', unit='s')
+        expected = DatetimeIndex(['NaT', 'NaT', 'NaT', 'NaT', 'NaT'])
+        tm.assert_index_equal(result, expected)
+
+        with self.assertRaises(tslib.OutOfBoundsDatetime):
+            to_datetime(values, errors='raise', unit='s')
+
+        # if we have a string, then we raise a ValueError
+        # and NOT an OutOfBoundsDatetime
+        for val in ['foo', Timestamp('20130101')]:
+            try:
+                to_datetime(val, errors='raise', unit='s')
+            except tslib.OutOfBoundsDatetime:
+                raise AssertionError("incorrect exception raised")
+            except ValueError:
+                pass
+
+        # consistency of conversions
+        expected = Timestamp('1970-05-09 14:25:11')
+        result = pd.to_datetime(11111111, unit='s', errors='raise')
+        self.assertEqual(result, expected)
+        self.assertIsInstance(result, Timestamp)
+
+        result = pd.to_datetime(11111111, unit='s', errors='coerce')
+        self.assertEqual(result, expected)
+        self.assertIsInstance(result, Timestamp)
+
+        result = pd.to_datetime(11111111, unit='s', errors='ignore')
+        self.assertEqual(result, expected)
+        self.assertIsInstance(result, Timestamp)
 
     def test_roundtrip(self):
 

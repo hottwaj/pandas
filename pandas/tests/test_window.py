@@ -863,7 +863,7 @@ class TestMoments(Base):
             self._check_moment_func(mom.rolling_max, np.max, name='max')
 
         with tm.assert_produces_warning(FutureWarning, check_stacklevel=False):
-            a = np.array([1, 2, 3, 4, 5])
+            a = np.array([1, 2, 3, 4, 5], dtype=np.float64)
             b = mom.rolling_max(a, window=100, min_periods=1)
             assert_almost_equal(a, b)
 
@@ -2833,6 +2833,20 @@ class TestGrouperGrouping(tm.TestCase):
         assert_series_equal(result, expected)
 
         result = self.frame.B.groupby(self.frame.A).rolling(2).mean()
+        assert_series_equal(result, expected)
+
+    def test_getitem_multiple(self):
+
+        # GH 13174
+        g = self.frame.groupby('A')
+        r = g.rolling(2)
+        g_mutated = self.frame.groupby('A', mutated=True)
+        expected = g_mutated.B.apply(lambda x: x.rolling(2).count())
+
+        result = r.B.count()
+        assert_series_equal(result, expected)
+
+        result = r.B.count()
         assert_series_equal(result, expected)
 
     def test_rolling(self):

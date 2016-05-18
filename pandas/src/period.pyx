@@ -772,6 +772,9 @@ cdef class Period(object):
             if self.ordinal == tslib.iNaT or other.ordinal == tslib.iNaT:
                 return _nat_scalar_rules[op]
             return PyObject_RichCompareBool(self.ordinal, other.ordinal, op)
+        # index/series like
+        elif hasattr(other, '_typ'):
+            return NotImplemented
         else:
             if op == Py_EQ:
                 return NotImplemented
@@ -813,38 +816,55 @@ cdef class Period(object):
             return NotImplemented
 
     def __add__(self, other):
-        if isinstance(other, (timedelta, np.timedelta64,
-                              offsets.Tick, offsets.DateOffset, Timedelta)):
-            return self._add_delta(other)
-        elif lib.is_integer(other):
-            if self.ordinal == tslib.iNaT:
-                ordinal = self.ordinal
-            else:
-                ordinal = self.ordinal + other * self.freq.n
-            return Period(ordinal=ordinal, freq=self.freq)
-        else:  # pragma: no cover
+        if isinstance(self, Period):
+            if isinstance(other, (timedelta, np.timedelta64,
+                                  offsets.Tick, offsets.DateOffset, Timedelta)):
+                return self._add_delta(other)
+            elif other is tslib.NaT:
+                return tslib.NaT
+            elif lib.is_integer(other):
+                if self.ordinal == tslib.iNaT:
+                    ordinal = self.ordinal
+                else:
+                    ordinal = self.ordinal + other * self.freq.n
+                return Period(ordinal=ordinal, freq=self.freq)
+            else:  # pragma: no cover
+                return NotImplemented
+        elif isinstance(other, Period):
+            return other + self
+        else:
             return NotImplemented
 
     def __sub__(self, other):
-        if isinstance(other, (timedelta, np.timedelta64,
-                              offsets.Tick, offsets.DateOffset, Timedelta)):
-            neg_other = -other
-            return self + neg_other
-        elif lib.is_integer(other):
-            if self.ordinal == tslib.iNaT:
-                ordinal = self.ordinal
-            else:
-                ordinal = self.ordinal - other * self.freq.n
-            return Period(ordinal=ordinal, freq=self.freq)
+        if isinstance(self, Period):
+            if isinstance(other, (timedelta, np.timedelta64,
+                                  offsets.Tick, offsets.DateOffset, Timedelta)):
+                neg_other = -other
+                return self + neg_other
+            elif lib.is_integer(other):
+                if self.ordinal == tslib.iNaT:
+                    ordinal = self.ordinal
+                else:
+                    ordinal = self.ordinal - other * self.freq.n
+                return Period(ordinal=ordinal, freq=self.freq)
+            elif isinstance(other, Period):
+                if other.freq != self.freq:
+                    raise ValueError("Cannot do arithmetic with "
+                                     "non-conforming periods")
+                if self.ordinal == tslib.iNaT or other.ordinal == tslib.iNaT:
+                    return Period(ordinal=tslib.iNaT, freq=self.freq)
+                return self.ordinal - other.ordinal
+            elif getattr(other, '_typ', None) == 'periodindex':
+                return -other.__sub__(self)
+            else:  # pragma: no cover
+                return NotImplemented
         elif isinstance(other, Period):
-            if other.freq != self.freq:
-                raise ValueError("Cannot do arithmetic with "
-                                 "non-conforming periods")
-            if self.ordinal == tslib.iNaT or other.ordinal == tslib.iNaT:
-                return Period(ordinal=tslib.iNaT, freq=self.freq)
-            return self.ordinal - other.ordinal
-        else:  # pragma: no cover
+            if self is tslib.NaT:
+                return tslib.NaT
             return NotImplemented
+        else:
+            return NotImplemented
+
 
     def asfreq(self, freq, how='E'):
         """

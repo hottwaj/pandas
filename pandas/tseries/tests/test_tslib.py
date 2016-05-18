@@ -19,8 +19,8 @@ import pandas.tseries.tools as tools
 import pandas.tseries.offsets as offsets
 import pandas.util.testing as tm
 import pandas.compat as compat
-from pandas.compat.numpy_compat import (np_datetime64_compat,
-                                        np_array_datetime64_compat)
+from pandas.compat.numpy import (np_datetime64_compat,
+                                 np_array_datetime64_compat)
 
 from pandas.util.testing import assert_series_equal, _skip_if_has_locale
 
@@ -318,6 +318,29 @@ class TestTimestamp(tm.TestCase):
                                    'Cannot convert tz-naive Timestamp, use '
                                    'tz_localize to localize'):
             Timestamp('2011-01-01').tz_convert('Asia/Tokyo')
+
+    def test_tz_localize_nonexistent(self):
+        # See issue 13057
+        from pytz.exceptions import NonExistentTimeError
+        times = ['2015-03-08 02:00', '2015-03-08 02:30',
+                 '2015-03-29 02:00', '2015-03-29 02:30']
+        timezones = ['US/Eastern', 'US/Pacific',
+                     'Europe/Paris', 'Europe/Belgrade']
+        for t, tz in zip(times, timezones):
+            ts = Timestamp(t)
+            self.assertRaises(NonExistentTimeError, ts.tz_localize,
+                              tz)
+            self.assertRaises(NonExistentTimeError, ts.tz_localize,
+                              tz, errors='raise')
+            self.assertIs(ts.tz_localize(tz, errors='coerce'),
+                          pd.NaT)
+
+    def test_tz_localize_errors_ambiguous(self):
+        # See issue 13057
+        from pytz.exceptions import AmbiguousTimeError
+        ts = pd.Timestamp('2015-11-1 01:00')
+        self.assertRaises(AmbiguousTimeError,
+                          ts.tz_localize, 'US/Pacific', errors='coerce')
 
     def test_tz_localize_roundtrip(self):
         for tz in ['UTC', 'Asia/Tokyo', 'US/Eastern', 'dateutil/US/Pacific']:
@@ -733,16 +756,18 @@ class TestDatetimeParsingWrappers(tm.TestCase):
                          expected_arr)
         self.assertEqual(tools.to_time(arg, format="%I:%M%p", errors="coerce"),
                          [None, None])
-        self.assert_numpy_array_equal(tools.to_time(arg, format="%I:%M%p",
-                                                    errors="ignore"),
-                                      np.array(arg))
-        self.assertRaises(ValueError,
-                          lambda: tools.to_time(arg, format="%I:%M%p",
-                                                errors="raise"))
+
+        res = tools.to_time(arg, format="%I:%M%p", errors="ignore")
+        self.assert_numpy_array_equal(res, np.array(arg, dtype=np.object_))
+
+        with tm.assertRaises(ValueError):
+            tools.to_time(arg, format="%I:%M%p", errors="raise")
+
         self.assert_series_equal(tools.to_time(Series(arg, name="test")),
                                  Series(expected_arr, name="test"))
+
         self.assert_numpy_array_equal(tools.to_time(np.array(arg)),
-                                      np.array(expected_arr))
+                                      np.array(expected_arr, dtype=np.object_))
 
     def test_parsers_monthfreq(self):
         cases = {'201101': datetime.datetime(2011, 1, 1, 0, 0),

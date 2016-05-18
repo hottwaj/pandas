@@ -14,7 +14,6 @@ import pandas.util.testing as tm
 
 
 class TestSparseArray(tm.TestCase):
-
     _multiprocess_can_split_ = True
 
     def setUp(self):
@@ -143,6 +142,19 @@ class TestSparseArray(tm.TestCase):
         assertRaisesRegexp(IndexError, "bounds", lambda: self.arr.take(11))
         self.assertRaises(IndexError, lambda: self.arr.take(-11))
 
+    def test_take_invalid_kwargs(self):
+        msg = "take\(\) got an unexpected keyword argument 'foo'"
+        tm.assertRaisesRegexp(TypeError, msg, self.arr.take,
+                              [2, 3], foo=2)
+
+        msg = "the 'out' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, self.arr.take,
+                              [2, 3], out=self.arr)
+
+        msg = "the 'mode' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, self.arr.take,
+                              [2, 3], mode='clip')
+
     def test_take_filling(self):
         # similar tests as GH 12631
         sparse = SparseArray([np.nan, np.nan, 1, np.nan, 4])
@@ -234,6 +246,10 @@ class TestSparseArray(tm.TestCase):
         assertRaisesRegexp(TypeError, "item assignment", setitem)
         assertRaisesRegexp(TypeError, "item assignment", setslice)
 
+    def test_constructor_from_too_large_array(self):
+        assertRaisesRegexp(TypeError, "expected dimension <= 1 data",
+                           SparseArray, np.arange(10).reshape((2, 5)))
+
     def test_constructor_from_sparse(self):
         res = SparseArray(self.zarr)
         self.assertEqual(res.fill_value, 0)
@@ -256,7 +272,8 @@ class TestSparseArray(tm.TestCase):
         self.assertEqual(arr.dtype, bool)
         tm.assert_numpy_array_equal(arr.sp_values, np.array([True, True]))
         tm.assert_numpy_array_equal(arr.sp_values, np.asarray(arr))
-        tm.assert_numpy_array_equal(arr.sp_index.indices, np.array([2, 3]))
+        tm.assert_numpy_array_equal(arr.sp_index.indices,
+                                    np.array([2, 3], np.int32))
 
         for dense in [arr.to_dense(), arr.values]:
             self.assertEqual(dense.dtype, bool)
@@ -281,9 +298,11 @@ class TestSparseArray(tm.TestCase):
         arr = SparseArray(data, dtype=np.float32)
 
         self.assertEqual(arr.dtype, np.float32)
-        tm.assert_numpy_array_equal(arr.sp_values, np.array([1, 3]))
+        tm.assert_numpy_array_equal(arr.sp_values,
+                                    np.array([1, 3], dtype=np.float32))
         tm.assert_numpy_array_equal(arr.sp_values, np.asarray(arr))
-        tm.assert_numpy_array_equal(arr.sp_index.indices, np.array([0, 2]))
+        tm.assert_numpy_array_equal(arr.sp_index.indices,
+                                    np.array([0, 2], dtype=np.int32))
 
         for dense in [arr.to_dense(), arr.values]:
             self.assertEqual(dense.dtype, np.float32)
@@ -500,7 +519,7 @@ class TestSparseArray(tm.TestCase):
         # filling with existing value doesn't replace existing value with
         # fill_value, i.e. existing 3 remains in sp_values
         res = s.fillna(3)
-        exp = np.array([1, 3, 3, 3, 3])
+        exp = np.array([1, 3, 3, 3, 3], dtype=np.float64)
         tm.assert_numpy_array_equal(res.to_dense(), exp)
 
         s = SparseArray([1, np.nan, np.nan, 3, np.nan], fill_value=0)
@@ -697,6 +716,107 @@ class TestSparseArrayArithmetic(tm.TestCase):
             b = SparseArray(rvalues, kind=kind, fill_value=2)
             self._check_comparison_ops(a, b, values, rvalues)
 
+
+class TestSparseArrayAnalytics(tm.TestCase):
+    def test_sum(self):
+        data = np.arange(10).astype(float)
+        out = SparseArray(data).sum()
+        self.assertEqual(out, 45.0)
+
+        data[5] = np.nan
+        out = SparseArray(data, fill_value=2).sum()
+        self.assertEqual(out, 40.0)
+
+        out = SparseArray(data, fill_value=np.nan).sum()
+        self.assertEqual(out, 40.0)
+
+    def test_numpy_sum(self):
+        data = np.arange(10).astype(float)
+        out = np.sum(SparseArray(data))
+        self.assertEqual(out, 45.0)
+
+        data[5] = np.nan
+        out = np.sum(SparseArray(data, fill_value=2))
+        self.assertEqual(out, 40.0)
+
+        out = np.sum(SparseArray(data, fill_value=np.nan))
+        self.assertEqual(out, 40.0)
+
+        msg = "the 'dtype' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, np.sum,
+                              SparseArray(data), dtype=np.int64)
+
+        msg = "the 'out' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, np.sum,
+                              SparseArray(data), out=out)
+
+    def test_cumsum(self):
+        data = np.arange(10).astype(float)
+        out = SparseArray(data).cumsum()
+        expected = SparseArray(data.cumsum())
+        tm.assert_sp_array_equal(out, expected)
+
+        # TODO: gh-12855 - return a SparseArray here
+        data[5] = np.nan
+        out = SparseArray(data, fill_value=2).cumsum()
+        self.assertNotIsInstance(out, SparseArray)
+        tm.assert_numpy_array_equal(out, data.cumsum())
+
+        out = SparseArray(data, fill_value=np.nan).cumsum()
+        expected = SparseArray(np.array([
+            0, 1, 3, 6, 10, np.nan, 16, 23, 31, 40]))
+        tm.assert_sp_array_equal(out, expected)
+
+    def test_numpy_cumsum(self):
+        data = np.arange(10).astype(float)
+        out = np.cumsum(SparseArray(data))
+        expected = SparseArray(data.cumsum())
+        tm.assert_sp_array_equal(out, expected)
+
+        # TODO: gh-12855 - return a SparseArray here
+        data[5] = np.nan
+        out = np.cumsum(SparseArray(data, fill_value=2))
+        self.assertNotIsInstance(out, SparseArray)
+        tm.assert_numpy_array_equal(out, data.cumsum())
+
+        out = np.cumsum(SparseArray(data, fill_value=np.nan))
+        expected = SparseArray(np.array([
+            0, 1, 3, 6, 10, np.nan, 16, 23, 31, 40]))
+        tm.assert_sp_array_equal(out, expected)
+
+        msg = "the 'dtype' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, np.cumsum,
+                              SparseArray(data), dtype=np.int64)
+
+        msg = "the 'out' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, np.cumsum,
+                              SparseArray(data), out=out)
+
+    def test_mean(self):
+        data = np.arange(10).astype(float)
+        out = SparseArray(data).mean()
+        self.assertEqual(out, 4.5)
+
+        data[5] = np.nan
+        out = SparseArray(data).mean()
+        self.assertEqual(out, 40.0 / 9)
+
+    def test_numpy_mean(self):
+        data = np.arange(10).astype(float)
+        out = np.mean(SparseArray(data))
+        self.assertEqual(out, 4.5)
+
+        data[5] = np.nan
+        out = np.mean(SparseArray(data))
+        self.assertEqual(out, 40.0 / 9)
+
+        msg = "the 'dtype' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, np.mean,
+                              SparseArray(data), dtype=np.int64)
+
+        msg = "the 'out' parameter is not supported"
+        tm.assertRaisesRegexp(ValueError, msg, np.mean,
+                              SparseArray(data), out=out)
 
 if __name__ == '__main__':
     import nose

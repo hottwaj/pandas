@@ -848,11 +848,11 @@ class TestHDFStore(Base, tm.TestCase):
 
             # uints - test storage of uints
             uint_data = DataFrame({
-                'u08': Series(np.random.random_integers(0, high=255, size=5),
+                'u08': Series(np.random.randint(0, high=255, size=5),
                               dtype=np.uint8),
-                'u16': Series(np.random.random_integers(0, high=65535, size=5),
+                'u16': Series(np.random.randint(0, high=65535, size=5),
                               dtype=np.uint16),
-                'u32': Series(np.random.random_integers(0, high=2**30, size=5),
+                'u32': Series(np.random.randint(0, high=2**30, size=5),
                               dtype=np.uint32),
                 'u64': Series([2**58, 2**59, 2**60, 2**61, 2**62],
                               dtype=np.uint64)}, index=np.arange(5))
@@ -4835,6 +4835,42 @@ class TestHDFStore(Base, tm.TestCase):
             assert_frame_equal(df, reread)
             df.to_hdf(path, 'df2', mode='a')
             self.assertRaises(ValueError, read_hdf, path)
+
+    def test_read_from_pathlib_path(self):
+
+        # GH11773
+        tm._skip_if_no_pathlib()
+
+        from pathlib import Path
+
+        expected = DataFrame(np.random.rand(4, 5),
+                             index=list('abcd'),
+                             columns=list('ABCDE'))
+        with ensure_clean_path(self.path) as filename:
+            path_obj = Path(filename)
+
+            expected.to_hdf(path_obj, 'df', mode='a')
+            actual = read_hdf(path_obj, 'df')
+
+        tm.assert_frame_equal(expected, actual)
+
+    def test_read_from_py_localpath(self):
+
+        # GH11773
+        tm._skip_if_no_localpath()
+
+        from py.path import local as LocalPath
+
+        expected = DataFrame(np.random.rand(4, 5),
+                             index=list('abcd'),
+                             columns=list('ABCDE'))
+        with ensure_clean_path(self.path) as filename:
+            path_obj = LocalPath(filename)
+
+            expected.to_hdf(path_obj, 'df', mode='a')
+            actual = read_hdf(path_obj, 'df')
+
+        tm.assert_frame_equal(expected, actual)
 
 
 class TestHDFComplexValues(Base):

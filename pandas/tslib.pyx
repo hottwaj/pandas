@@ -332,11 +332,19 @@ class Timestamp(_Timestamp):
 
     def round(self, freq):
         """
-        return a new Timestamp rounded to this resolution
+        Round the Timestamp to the specified resolution
+
+        Returns
+        -------
+        a new Timestamp rounded to the given resolution of `freq`
 
         Parameters
         ----------
         freq : a freq string indicating the rounding resolution
+
+        Raises
+        ------
+        ValueError if the freq cannot be converted
         """
         return self._round(freq, np.round)
 
@@ -452,7 +460,7 @@ class Timestamp(_Timestamp):
     def is_year_end(self):
         return self._get_start_end_field('is_year_end')
 
-    def tz_localize(self, tz, ambiguous='raise'):
+    def tz_localize(self, tz, ambiguous='raise', errors='raise'):
         """
         Convert naive Timestamp to local time zone, or remove
         timezone from tz-aware Timestamp.
@@ -467,6 +475,14 @@ class Timestamp(_Timestamp):
             that this flag is only applicable for ambiguous fall dst dates)
             - 'NaT' will return NaT for an ambiguous time
             - 'raise' will raise an AmbiguousTimeError for an ambiguous time
+        errors : 'raise', 'coerce', default 'raise'
+            - 'raise' will raise a NonExistentTimeError if a timestamp is not
+               valid in the specified timezone (e.g. due to a transition from
+               or to DST time)
+            - 'coerce' will return NaT if the timestamp can not be converted
+              into the specified timezone
+
+              .. versionadded:: 0.18.2
 
         Returns
         -------
@@ -486,7 +502,7 @@ class Timestamp(_Timestamp):
             if not isinstance(ambiguous, basestring):
                 ambiguous   =   [ambiguous]
             value = tz_localize_to_utc(np.array([self.value],dtype='i8'), tz,
-                                       ambiguous=ambiguous)[0]
+                                       ambiguous=ambiguous, errors=errors)[0]
             return Timestamp(value, tz=tz)
         else:
             if tz is None:
@@ -802,6 +818,7 @@ cdef pandas_datetimestruct _NS_MIN_DTS, _NS_MAX_DTS
 pandas_datetime_to_datetimestruct(_NS_LOWER_BOUND, PANDAS_FR_ns, &_NS_MIN_DTS)
 pandas_datetime_to_datetimestruct(_NS_UPPER_BOUND, PANDAS_FR_ns, &_NS_MAX_DTS)
 
+# Resolution is in nanoseconds
 Timestamp.min = Timestamp(_NS_LOWER_BOUND)
 Timestamp.max = Timestamp(_NS_UPPER_BOUND)
 
@@ -1344,6 +1361,8 @@ cdef convert_to_tsobject(object ts, object tz, object unit,
 
 cpdef convert_str_to_tsobject(object ts, object tz, object unit,
                               dayfirst=False, yearfirst=False):
+    """ ts must be a string """
+
     cdef:
         _TSObject obj
         int out_local = 0, out_tzoffset = 0
@@ -1353,7 +1372,9 @@ cpdef convert_str_to_tsobject(object ts, object tz, object unit,
 
     obj = _TSObject()
 
-    if ts in _nat_strings:
+    assert util.is_string_object(ts)
+
+    if len(ts) == 0 or ts in _nat_strings:
         ts = NaT
     elif ts == 'now':
         # Issue 9000, we short-circuit rather than going
@@ -1386,7 +1407,7 @@ cpdef convert_str_to_tsobject(object ts, object tz, object unit,
             try:
                 ts = parse_datetime_string(ts, dayfirst=dayfirst, yearfirst=yearfirst)
             except Exception:
-                raise ValueError
+                raise ValueError("could not convert string to Timestamp")
 
     return convert_to_tsobject(ts, tz, unit, dayfirst, yearfirst)
 
@@ -1778,6 +1799,10 @@ cdef inline object _parse_dateabbr_string(object date_string, object default,
         int year, quarter, month, mnum, date_len
 
     # special handling for possibilities eg, 2Q2005, 2Q05, 2005Q1, 05Q1
+    assert util.is_string_object(date_string)
+
+    # len(date_string) == 0
+    # should be NaT???
 
     if date_string in _nat_strings:
         return NaT, NaT, ''
@@ -1961,9 +1986,162 @@ cpdef object _get_rule_month(object source, object default='DEC'):
         return source.split('-')[1]
 
 
+cpdef array_with_unit_to_datetime(ndarray values, unit, errors='coerce'):
+    """
+    convert the ndarray according to the unit
+    if errors:
+      - raise: return converted values or raise OutOfBoundsDatetime
+          if out of range on the conversion or
+          ValueError for other conversions (e.g. a string)
+      - ignore: return non-convertible values as the same unit
+      - coerce: NaT for non-convertibles
+
+    """
+    cdef:
+        Py_ssize_t i, j, n=len(values)
+        int64_t m
+        ndarray[float64_t] fvalues
+        ndarray mask
+        bint is_ignore=errors=='ignore', is_coerce=errors=='coerce', is_raise=errors=='raise'
+        bint need_to_iterate=True
+        ndarray[int64_t] iresult
+        ndarray[object] oresult
+
+    assert is_ignore or is_coerce or is_raise
+
+    if unit == 'ns':
+        if issubclass(values.dtype.type, np.integer):
+            return values.astype('M8[ns]')
+        return array_to_datetime(values.astype(object), errors=errors)
+
+    m = cast_from_unit(None, unit)
+
+    if is_raise:
+
+        # try a quick conversion to i8
+        # if we have nulls that are not type-compat
+        # then need to iterate
+        try:
+            iresult = values.astype('i8')
+            mask = iresult == iNaT
+            iresult[mask] = 0
+            fvalues = iresult.astype('f8') * m
+            need_to_iterate=False
+        except:
+            pass
+
+        # check the bounds
+        if not need_to_iterate:
+
+            if (fvalues < _NS_LOWER_BOUND).any() or (fvalues > _NS_UPPER_BOUND).any():
+                raise OutOfBoundsDatetime("cannot convert input with unit '{0}'".format(unit))
+            result = (iresult*m).astype('M8[ns]')
+            iresult = result.view('i8')
+            iresult[mask] = iNaT
+            return result
+
+    result = np.empty(n, dtype='M8[ns]')
+    iresult = result.view('i8')
+
+    try:
+        for i in range(n):
+            val = values[i]
+
+            if _checknull_with_nat(val):
+                iresult[i] = NPY_NAT
+
+            elif is_integer_object(val) or is_float_object(val):
+
+                if val != val or val == NPY_NAT:
+                    iresult[i] = NPY_NAT
+                else:
+                    try:
+                        iresult[i] = cast_from_unit(val, unit)
+                    except OverflowError:
+                        if is_raise:
+                            raise OutOfBoundsDatetime("cannot convert input {0}"
+                                                      "with the unit '{1}'".format(
+                                                          val,
+                                                          unit))
+                        elif is_ignore:
+                            raise AssertionError
+                        iresult[i] = NPY_NAT
+
+            elif util.is_string_object(val):
+                if len(val) == 0 or val in _nat_strings:
+                    iresult[i] = NPY_NAT
+
+                else:
+                    try:
+                        iresult[i] = cast_from_unit(float(val), unit)
+                    except ValueError:
+                        if is_raise:
+                            raise ValueError("non convertible value {0}"
+                                             "with the unit '{1}'".format(
+                                                 val,
+                                                 unit))
+                        elif is_ignore:
+                            raise AssertionError
+                    except:
+                        if is_raise:
+                            raise OutOfBoundsDatetime("cannot convert input {0}"
+                                                      "with the unit '{1}'".format(
+                                                          val,
+                                                          unit))
+                        elif is_ignore:
+                            raise AssertionError
+                        iresult[i] = NPY_NAT
+
+            else:
+
+                if is_raise:
+                    raise ValueError("non convertible value {0}"
+                                     "with the unit '{1}'".format(
+                                         val,
+                                         unit))
+                if is_ignore:
+                    raise AssertionError
+
+                iresult[i] = NPY_NAT
+
+        return result
+
+    except AssertionError:
+        pass
+
+    # we have hit an exception
+    # and are in ignore mode
+    # redo as object
+
+    oresult = np.empty(n, dtype=object)
+    for i in range(n):
+        val = values[i]
+
+        if _checknull_with_nat(val):
+            oresult[i] = NaT
+        elif is_integer_object(val) or is_float_object(val):
+
+            if val != val or val == NPY_NAT:
+                oresult[i] = NaT
+            else:
+                try:
+                    oresult[i] = Timestamp(cast_from_unit(val, unit))
+                except:
+                    oresult[i] = val
+
+        elif util.is_string_object(val):
+            if len(val) == 0 or val in _nat_strings:
+                oresult[i] = NaT
+
+            else:
+                oresult[i] = val
+
+    return oresult
+
+
 cpdef array_to_datetime(ndarray[object] values, errors='raise',
                         dayfirst=False, yearfirst=False, freq=None,
-                        format=None, utc=None, unit=None,
+                        format=None, utc=None,
                         require_iso8601=False):
     cdef:
         Py_ssize_t i, n = len(values)
@@ -1974,8 +2152,7 @@ cpdef array_to_datetime(ndarray[object] values, errors='raise',
         bint utc_convert = bool(utc), seen_integer=0, seen_datetime=0
         bint is_raise=errors=='raise', is_ignore=errors=='ignore', is_coerce=errors=='coerce'
         _TSObject _ts
-        int64_t m = cast_from_unit(None,unit)
-        int out_local = 0, out_tzoffset = 0
+        int out_local=0, out_tzoffset=0
 
     # specify error conditions
     assert is_raise or is_ignore or is_coerce
@@ -1991,7 +2168,7 @@ cpdef array_to_datetime(ndarray[object] values, errors='raise',
                 seen_datetime=1
                 if val.tzinfo is not None:
                     if utc_convert:
-                        _ts = convert_to_tsobject(val, None, unit, 0, 0)
+                        _ts = convert_to_tsobject(val, None, 'ns', 0, 0)
                         iresult[i] = _ts.value
                         try:
                             _check_dts_bounds(&_ts.dts)
@@ -2043,23 +2220,20 @@ cpdef array_to_datetime(ndarray[object] values, errors='raise',
                 if val == NPY_NAT:
                     iresult[i] = NPY_NAT
                 else:
-                    iresult[i] = val*m
+                    iresult[i] = val
                     seen_integer=1
             elif is_float_object(val) and not is_coerce:
                 if val != val or val == NPY_NAT:
                     iresult[i] = NPY_NAT
                 else:
-                    iresult[i] = cast_from_unit(val,unit)
+                    iresult[i] = <int64_t>val
                     seen_integer=1
             else:
                 try:
-                    if len(val) == 0:
+                    if len(val) == 0 or val in _nat_strings:
                         iresult[i] = NPY_NAT
                         continue
 
-                    elif val in _nat_strings:
-                        iresult[i] = NPY_NAT
-                        continue
                     _string_to_dts(val, &dts, &out_local, &out_tzoffset)
                     value = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
                     if out_local == 1:
@@ -2139,10 +2313,11 @@ cpdef array_to_datetime(ndarray[object] values, errors='raise',
             if _checknull_with_nat(val):
                 oresult[i] = val
             elif util.is_string_object(val):
-                if len(val) == 0:
-                    # TODO: ??
+
+                if len(val) == 0 or val in _nat_strings:
                     oresult[i] = 'NaT'
                     continue
+
                 try:
                     oresult[i] = parse_datetime_string(val, dayfirst=dayfirst,
                                                     yearfirst=yearfirst, freq=freq)
@@ -2445,12 +2620,19 @@ class Timedelta(_Timedelta):
 
     def round(self, freq):
         """
-        return a new Timedelta rounded to this resolution.
+        Round the Timedelta to the specified resolution
 
+        Returns
+        -------
+        a new Timedelta rounded to the given resolution of `freq`
 
         Parameters
         ----------
         freq : a freq string indicating the rounding resolution
+
+        Raises
+        ------
+        ValueError if the freq cannot be converted
         """
         return self._round(freq, np.round)
 
@@ -2725,10 +2907,9 @@ class Timedelta(_Timedelta):
     __pos__ = _op_unary_method(lambda x: x, '__pos__')
     __abs__ = _op_unary_method(lambda x: abs(x), '__abs__')
 
-
-# Resolution is in nanoseconds
-Timedelta.min = Timedelta(np.iinfo(np.int64).min+1, 'ns')
-Timedelta.max = Timedelta(np.iinfo(np.int64).max, 'ns')
+# resolution in ns
+Timedelta.min = Timedelta(np.iinfo(np.int64).min+1)
+Timedelta.max = Timedelta(np.iinfo(np.int64).max)
 
 cdef PyTypeObject* td_type = <PyTypeObject*> Timedelta
 
@@ -2856,7 +3037,7 @@ cdef inline parse_timedelta_string(object ts, coerce=False):
     # have_value : track if we have at least 1 leading unit
     # have_hhmmss : tracks if we have a regular format hh:mm:ss
 
-    if ts in _nat_strings or not len(ts):
+    if len(ts) == 0 or ts in _nat_strings:
         return NPY_NAT
 
     # decode ts if necessary
@@ -3770,7 +3951,8 @@ cpdef ndarray _unbox_utcoffsets(object transinfo):
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def tz_localize_to_utc(ndarray[int64_t] vals, object tz, object ambiguous=None):
+def tz_localize_to_utc(ndarray[int64_t] vals, object tz, object ambiguous=None,
+                       object errors='raise'):
     """
     Localize tzinfo-naive DateRange to given time zone (using pytz). If
     there are ambiguities in the values, raise AmbiguousTimeError.
@@ -3787,8 +3969,11 @@ def tz_localize_to_utc(ndarray[int64_t] vals, object tz, object ambiguous=None):
         ndarray[int64_t] result, result_a, result_b, dst_hours
         pandas_datetimestruct dts
         bint infer_dst = False, is_dst = False, fill = False
+        bint is_coerce = errors == 'coerce', is_raise = errors == 'raise'
 
     # Vectorized version of DstTzInfo.localize
+
+    assert is_coerce or is_raise
 
     if not have_pytz:
         raise Exception("Could not find pytz module")
@@ -3919,8 +4104,11 @@ def tz_localize_to_utc(ndarray[int64_t] vals, object tz, object ambiguous=None):
         elif right != NPY_NAT:
             result[i] = right
         else:
-            stamp = Timestamp(vals[i])
-            raise pytz.NonExistentTimeError(stamp)
+            if is_coerce:
+                result[i] = NPY_NAT
+            else:
+                stamp = Timestamp(vals[i])
+                raise pytz.NonExistentTimeError(stamp)
 
     return result
 

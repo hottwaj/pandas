@@ -8,11 +8,20 @@ from pandas.core.common import (isnull, notnull, _values_from_object,
 from pandas.core.algorithms import take_1d
 import pandas.compat as compat
 from pandas.core.base import AccessorProperty, NoNewAttributesMixin
+from pandas.types import api as gt
 from pandas.util.decorators import Appender, deprecate_kwarg
 import re
 import pandas.lib as lib
 import warnings
 import textwrap
+import codecs
+
+_cpython_optimized_encoders = (
+    "utf-8", "utf8", "latin-1", "latin1", "iso-8859-1", "mbcs", "ascii"
+)
+_cpython_optimized_decoders = _cpython_optimized_encoders + (
+    "utf-16", "utf-32"
+)
 
 _shared_docs = dict()
 
@@ -140,12 +149,10 @@ def _na_map(f, arr, na_result=np.nan, dtype=object):
 
 
 def _map(f, arr, na_mask=False, na_value=np.nan, dtype=object):
-    from pandas.core.series import Series
-
     if not len(arr):
         return np.ndarray(0, dtype=dtype)
 
-    if isinstance(arr, Series):
+    if isinstance(arr, gt.ABCSeries):
         arr = arr.values
     if not isinstance(arr, np.ndarray):
         arr = np.asarray(arr, dtype=object)
@@ -679,33 +686,42 @@ def str_extractall(arr, pat, flags=0):
     C 0        NaN     1
 
     """
-    from pandas import DataFrame, MultiIndex
+
     regex = re.compile(pat, flags=flags)
     # the regex must contain capture groups.
     if regex.groups == 0:
         raise ValueError("pattern contains no capture groups")
+
+    if isinstance(arr, gt.ABCIndex):
+        arr = arr.to_series().reset_index(drop=True)
+
     names = dict(zip(regex.groupindex.values(), regex.groupindex.keys()))
     columns = [names.get(1 + i, i) for i in range(regex.groups)]
     match_list = []
     index_list = []
+    is_mi = arr.index.nlevels > 1
+
     for subject_key, subject in arr.iteritems():
         if isinstance(subject, compat.string_types):
-            try:
-                key_list = list(subject_key)
-            except TypeError:
-                key_list = [subject_key]
+
+            if not is_mi:
+                subject_key = (subject_key, )
+
             for match_i, match_tuple in enumerate(regex.findall(subject)):
-                na_tuple = [
-                    np.NaN if group == "" else group for group in match_tuple]
+                na_tuple = [np.NaN if group == "" else group
+                            for group in match_tuple]
                 match_list.append(na_tuple)
-                result_key = tuple(key_list + [match_i])
+                result_key = tuple(subject_key + (match_i, ))
                 index_list.append(result_key)
+
     if 0 < len(index_list):
+        from pandas import MultiIndex
         index = MultiIndex.from_tuples(
             index_list, names=arr.index.names + ["match"])
     else:
         index = None
-    result = DataFrame(match_list, index, columns)
+    result = arr._constructor_expanddim(match_list, index=index,
+                                        columns=columns)
     return result
 
 
@@ -1182,7 +1198,12 @@ def str_decode(arr, encoding, errors="strict"):
     -------
     decoded : Series/Index of objects
     """
-    f = lambda x: x.decode(encoding, errors)
+    if encoding in _cpython_optimized_decoders:
+        # CPython optimized implementation
+        f = lambda x: x.decode(encoding, errors)
+    else:
+        decoder = codecs.getdecoder(encoding)
+        f = lambda x: decoder(x, errors)[0]
     return _na_map(f, arr)
 
 
@@ -1200,7 +1221,12 @@ def str_encode(arr, encoding, errors="strict"):
     -------
     encoded : Series/Index of objects
     """
-    f = lambda x: x.encode(encoding, errors)
+    if encoding in _cpython_optimized_encoders:
+        # CPython optimized implementation
+        f = lambda x: x.encode(encoding, errors)
+    else:
+        encoder = codecs.getencoder(encoding)
+        f = lambda x: encoder(x, errors)[0]
     return _na_map(f, arr)
 
 
@@ -1786,9 +1812,9 @@ class StringAccessorMixin(object):
 
     # string methods
     def _make_str_accessor(self):
-        from pandas.core.series import Series
         from pandas.core.index import Index
-        if (isinstance(self, Series) and
+
+        if (isinstance(self, gt.ABCSeries) and
                 not ((is_categorical_dtype(self.dtype) and
                       is_object_dtype(self.values.categories)) or
                      (is_object_dtype(self.dtype)))):
@@ -1801,6 +1827,8 @@ class StringAccessorMixin(object):
                                  "values, which use np.object_ dtype in "
                                  "pandas")
         elif isinstance(self, Index):
+            # can't use ABCIndex to exclude non-str
+
             # see scc/inferrence.pyx which can contain string values
             allowed_types = ('string', 'unicode', 'mixed', 'mixed-integer')
             if self.inferred_type not in allowed_types:
