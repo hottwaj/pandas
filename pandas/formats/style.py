@@ -203,14 +203,18 @@ class Styler(object):
 
         for r in range(n_clvls):
             row_es = []
-            for index_name in self.data.index.names:
-                if index_name is not None:
-                    val, th_class = index_name, INDEX_CLASS
-                else:
-                    val, th_class = BLANK_VALUE, BLANK_CLASS
-                    
-                row_es.append({"type": "th", "value": val,
-                               "class": " ".join([th_class])})
+            
+            if n_clvls == 1:
+                #there is no multi index for columns
+                #so add row index names here instead of in separate row
+                for index_name in self.data.index.names:
+                    if index_name is not None:
+                        val, th_class = index_name, INDEX_CLASS
+                    else:
+                        val, th_class = BLANK_VALUE, BLANK_CLASS
+                        
+                    row_es.append({"type": "th", "value": val,
+                                   "class": " ".join([th_class])})
             for c in range(len(clabels[0])):
                 cs = [COL_HEADING_CLASS, "level%s" % r, "col%s" % c]
                 cs.extend(cell_context.get(
@@ -222,7 +226,8 @@ class Styler(object):
                                "class": " ".join(cs)})
             head.append(row_es)
 
-        if self.data.index.names and self.data.index.names != [None]:
+        if n_clvls != 1 and self.data.index.names and self.data.index.names != [None]:
+            #if multi index for columns need a separate row to put row header names in
             index_header_row = []
 
             for c, name in enumerate(self.data.index.names):
